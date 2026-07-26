@@ -1,0 +1,22 @@
+# Memla AML disposition replay runner (Tier A client-hosted pilot)
+# LLM inference is NOT bundled — point at bank-local Ollama or private LLM gateway.
+FROM python:3.11-slim-bookworm
+
+RUN useradd --create-home --shell /bin/bash memla
+WORKDIR /app
+
+COPY pyproject.toml README.md PYPI_README.md ./
+COPY memory_system ./memory_system
+COPY cases ./cases
+
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir .
+
+USER memla
+ENV PYTHONUNBUFFERED=1 \
+    LLM_PROVIDER=ollama \
+    LLM_BASE_URL=http://127.0.0.1:11434
+
+# Default: show CLI help. Override with replay command at runtime.
+ENTRYPOINT ["memla"]
+CMD ["aml", "benchmark-disposition", "--help"]

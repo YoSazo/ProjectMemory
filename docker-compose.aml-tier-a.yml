@@ -1,0 +1,43 @@
+# Reference compose for bank sandbox — adjust images, volumes, and network policy to local standards.
+# Ollama is optional if the bank uses an internal OpenAI-compatible LLM gateway instead.
+services:
+  memla-replay:
+    build:
+      context: .
+      dockerfile: Dockerfile.aml-replay
+    image: memla-aml-replay:0.2.0
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - ./pilot-input:/input:ro
+      - ./pilot-output:/output:rw
+    environment:
+      LLM_PROVIDER: ollama
+      LLM_BASE_URL: http://ollama:11434
+    # Example run (after bank security review):
+    # command: >
+    #   aml benchmark-disposition
+    #   --cases /input/alerts.jsonl
+    #   --raw-model qwen3.5:9b
+    #   --memla-model qwen3.5:9b
+    #   --raw-provider ollama
+    #   --memla-base-url http://ollama:11434
+    #   --memla-provider ollama
+    #   --memla-iterations 3
+    #   --out-dir /output/report
+
+  ollama:
+    image: ollama/ollama:0.6.5
+    profiles: ["with-ollama"]
+    ports: []  # no host publish — internal only when network enabled by bank
+    volumes:
+      - ollama_models:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices: []  # bank may attach GPU here
+
+volumes:
+  ollama_models:

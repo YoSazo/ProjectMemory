@@ -22,12 +22,14 @@ class UniversalLLMClient:
     - provider="openai": OpenAI-compatible /v1/chat/completions (API key)
     - provider="anthropic": Anthropic /v1/messages (API key via x-api-key)
     - provider="github_models": GitHub Models /inference/chat/completions (GitHub token)
+    - provider="gemini": Gemini generateContent API (API key via x-goog-api-key)
 
     Configure via constructor or env:
-    - LLM_PROVIDER: "ollama" | "openai" | "anthropic" | "github_models"
+    - LLM_PROVIDER: "ollama" | "openai" | "anthropic" | "github_models" | "gemini"
     - LLM_BASE_URL: e.g. "http://127.0.0.1:11434" (ollama) or "https://api.openai.com" or "https://api.anthropic.com"
     - LLM_API_KEY: any API key string (used when provider != "ollama")
     - GITHUB_TOKEN / GITHUB_MODELS_TOKEN: optional fallback when provider="github_models"
+    - GEMINI_API_KEY / GOOGLE_API_KEY: optional fallback when provider="gemini"
     """
 
     def __init__(
@@ -50,6 +52,8 @@ class UniversalLLMClient:
         api_key = os.environ.get("LLM_API_KEY")
         if provider == "github_models" and not api_key:
             api_key = os.environ.get("GITHUB_MODELS_TOKEN") or os.environ.get("GITHUB_TOKEN")
+        if provider == "gemini" and not api_key:
+            api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         return cls(provider=provider, base_url=base_url, api_key=api_key)
 
     @staticmethod
@@ -70,6 +74,8 @@ class UniversalLLMClient:
         normalized = provider.strip().lower().replace("-", "_")
         if normalized in {"github", "githubmodels"}:
             return "github_models"
+        if normalized in {"google", "google_ai", "google_genai", "generative_language", "gemini_api"}:
+            return "gemini"
         return normalized
 
     @staticmethod
@@ -80,6 +86,11 @@ class UniversalLLMClient:
                 return "https://models.github.ai/inference"
             if base == "https://models.github.ai":
                 return "https://models.github.ai/inference"
+        if provider == "gemini":
+            if not base or base in {"http://127.0.0.1:11434", "http://localhost:11434"}:
+                return "https://generativelanguage.googleapis.com/v1beta"
+            if base == "https://generativelanguage.googleapis.com":
+                return "https://generativelanguage.googleapis.com/v1beta"
         return base or "http://127.0.0.1:11434"
 
     def chat(
@@ -96,8 +107,133 @@ class UniversalLLMClient:
             return self._chat_anthropic(model=model, messages=messages, temperature=temperature)
         if self.provider == "github_models":
             return self._chat_github_models(model=model, messages=messages, temperature=temperature)
+        if self.provider == "gemini":
+            return self._chat_gemini(model=model, messages=messages, temperature=temperature)
         # default to OpenAI-compatible
         return self._chat_openai_compatible(model=model, messages=messages, temperature=temperature)
+
+    def _chat_gemini(
+        self,
+        *,
+        model: str,
+        messages: list[ChatMessage],
+        temperature: float,
+    ) -> str:
+        """
+        Native Gemini generateContent API.
+
+        - Endpoint: POST /v1beta/models/{model}:generateContent
+        - Auth: x-goog-api-key
+        - System: top-level systemInstruction text part
+        - Input: a compact text transcript built from user/assistant messages
+        """
+        if not self.api_key:
+            raise RuntimeError("Gemini requires an API key. Set LLM_API_KEY, GEMINI_API_KEY, or GOOGLE_API_KEY.")
+
+        model_path = str(model or "").strip()
+        if model_path.startswith("models/"):
+            model_path = model_path[len("models/") :]
+        url = f"{self.base_url.rstrip('/')}/models/{model_path}:generateContent"
+        hdrs = dict(self.headers)
+        hdrs.setdefault("x-goog-api-key", self.api_key)
+        hdrs.setdefault("Content-Type", "application/json")
+
+        system_parts = [m.content for m in messages if m.role == "system" and m.content.strip()]
+        system = "\n\n".join(system_parts).strip()
+        conversation_parts: list[str] = []
+        non_system = [m for m in messages if m.role != "system"]
+        for message in non_system:
+            role = message.role if message.role in {"user", "assistant"} else "user"
+            if len(non_system) == 1 and role == "user":
+                conversation_parts.append(message.content)
+            else:
+                conversation_parts.append(f"{role.upper()}:\n{message.content}")
+        input_text = "\n\n".join(part for part in conversation_parts if str(part or "").strip()).strip()
+        if not input_text:
+            input_text = "Respond with the requested output."
+
+        payload: dict[str, Any] = {
+            "contents": [{"role": "user", "parts": [{"text": input_text}]}],
+            "generationConfig": {
+                "temperature": float(temperature),
+                "responseMimeType": "application/json",
+            },
+        }
+        if system:
+            payload["systemInstruction"] = {"parts": [{"text": system}]}
+
+        data: dict[str, Any] | None = None
+        last_error: Exception | None = None
+        retry_delays = (1.0, 2.5, 5.0)
+        for attempt in range(len(retry_delays) + 1):
+            try:
+                resp = requests.post(url, json=payload, timeout=600, headers=hdrs)
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            except requests.exceptions.HTTPError as exc:
+                status = exc.response.status_code if exc.response is not None else None
+                if status not in {429, 500, 502, 503, 504, 529} or attempt >= len(retry_delays):
+                    raise self._gemini_http_error(exc) from exc
+                last_error = exc
+            except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as exc:
+                if attempt >= len(retry_delays):
+                    raise
+                last_error = exc
+            time.sleep(retry_delays[attempt])
+
+        if data is None:
+            if last_error is not None:
+                raise last_error
+            raise RuntimeError("Gemini chat failed without a response payload.")
+
+        output_text = data.get("output_text")
+        if isinstance(output_text, str) and output_text.strip():
+            return output_text.strip()
+
+        text = self._extract_gemini_text(data)
+        if text:
+            return text
+        raise RuntimeError(f"Unexpected Gemini response: {json.dumps(data)[:500]}")
+
+    @staticmethod
+    def _gemini_http_error(exc: requests.exceptions.HTTPError) -> RuntimeError:
+        response = exc.response
+        status = response.status_code if response is not None else "unknown"
+        message = str(exc)
+        if response is not None:
+            try:
+                payload = response.json()
+            except Exception:
+                text = getattr(response, "text", "") or ""
+                if text:
+                    message = text[:1000]
+            else:
+                error = payload.get("error") if isinstance(payload, dict) else None
+                if isinstance(error, dict):
+                    message = str(error.get("message") or json.dumps(error, sort_keys=True))[:1000]
+                else:
+                    message = json.dumps(payload, sort_keys=True)[:1000]
+        return RuntimeError(f"Gemini HTTP {status}: {message}")
+
+    @staticmethod
+    def _extract_gemini_text(payload: dict[str, Any]) -> str:
+        parts: list[str] = []
+
+        def _visit(value: Any) -> None:
+            if isinstance(value, dict):
+                text = value.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+                for key in ("content", "contents", "parts", "steps", "output", "candidates"):
+                    if key in value:
+                        _visit(value[key])
+            elif isinstance(value, list):
+                for item in value:
+                    _visit(item)
+
+        _visit(payload)
+        return "".join(parts).strip()
 
     def _chat_ollama(
         self,
@@ -364,4 +500,3 @@ class UniversalLLMClient:
 
 # Backwards compat (internal). Prefer UniversalLLMClient.
 OllamaClient = UniversalLLMClient
-

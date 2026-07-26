@@ -156,6 +156,15 @@ memla healthcare benchmark-denials --cases cases\\healthcare_denial_eval_cases.j
 Public provenance for the bundled healthcare pack:
 - `cases/healthcare_denial_public_sources.md`
 
+Run the AML alert disposition replay benchmark:
+
+```bash
+memla aml benchmark-disposition --cases cases\\aml_alert_public_eval_cases.jsonl --raw-model qwen3.5:9b --memla-model qwen3.5:9b --raw-provider ollama --raw-base-url http://127.0.0.1:11435 --memla-provider ollama --memla-base-url http://127.0.0.1:11435
+```
+
+Public provenance for the bundled AML pack:
+- `cases/aml_alert_public_sources.md`
+
 Run the policy-as-code authz replay benchmark:
 
 ```bash

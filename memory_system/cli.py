@@ -22,6 +22,11 @@ from .distillation.coding_c2a_benchmark import (
     render_coding_c2a_markdown,
     run_coding_c2a_benchmark,
 )
+from .distillation.aml_disposition_benchmark import (
+    render_aml_disposition_markdown,
+    run_aml_disposition_benchmark,
+)
+from .distillation.amlsim_case_converter import write_amlsim_cases_jsonl
 from .distillation.finance_pretrade_benchmark import (
     render_finance_pretrade_markdown,
     run_finance_pretrade_benchmark,
@@ -114,6 +119,24 @@ from .natural_terminal import (
     terminal_step_execution_to_dict,
     terminal_step_report_to_dict,
 )
+from .fortresses.runner import (
+    default_coding_fortress_cases,
+    load_coding_fortress_cases,
+    run_coding_fortress_benchmark,
+    run_coding_fortress_extraction,
+    summarize_coding_fortress_cases,
+    write_coding_fortress_artifacts,
+    write_coding_fortress_extraction_artifacts,
+)
+from .fortresses.gpt_seed_bank import build_gpt_seed_extraction_report
+from .fortresses.agency_automation import (
+    DEFAULT_AGENCY_AUTOMATION_TEACHER_MODEL,
+    DEFAULT_AGENCY_AUTOMATION_TEACHER_PROVIDER,
+    run_agency_automation,
+    write_agency_automation_artifacts,
+)
+from .fortresses.meta_fortress import GlobalTransmutationLedger
+from .ollama_client import UniversalLLMClient
 from .terminal_workbench import serve_terminal_workbench
 
 
@@ -224,6 +247,19 @@ def _resolve_db_path(raw: str, repo_root: Path) -> Path:
         path = repo_root / ".memla" / "memory.sqlite"
     path.parent.mkdir(parents=True, exist_ok=True)
     return path.resolve()
+
+
+def _build_universal_llm_client(*, provider: str = "", base_url: str = "") -> UniversalLLMClient:
+    if not provider and not base_url:
+        return UniversalLLMClient.from_env()
+    normalized_provider = UniversalLLMClient._normalize_provider(provider or os.environ.get("LLM_PROVIDER", "ollama"))
+    resolved_base_url = base_url or UniversalLLMClient._default_base_url_from_env(normalized_provider)
+    api_key = os.environ.get("LLM_API_KEY")
+    if normalized_provider == "github_models" and not api_key:
+        api_key = os.environ.get("GITHUB_MODELS_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if normalized_provider == "gemini" and not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    return UniversalLLMClient(provider=normalized_provider, base_url=resolved_base_url, api_key=api_key)
 
 
 def _default_report_dir(kind: str) -> Path:
@@ -589,6 +625,225 @@ def _handle_c2a_benchmark(args: argparse.Namespace) -> int:
         f"memla utility {report.get('avg_memla_c2a_utility', 0.0)} | "
         f"utility index {utility_text}"
     )
+    return 0
+
+
+def _handle_coding_fortress_benchmark(args: argparse.Namespace) -> int:
+    if args.dry_run:
+        cases = load_coding_fortress_cases(args.cases) if args.cases else default_coding_fortress_cases()
+        if args.limit:
+            cases = cases[: max(int(args.limit), 0)]
+        summary = summarize_coding_fortress_cases(cases)
+        if args.json:
+            _print_json(summary)
+        else:
+            print(
+                "Coding fortress dry run: "
+                f"{summary.get('case_count', 0)} cases | "
+                f"{summary.get('retrieval_case_count', 0)} retrieval | "
+                f"{summary.get('cross_domain_transfer_case_count', 0)} cross-domain | "
+                f"estimated two-lane tokens {summary.get('estimated_total_tokens_two_lanes', 0)}"
+            )
+            print(f"Phase counts: {summary.get('phase_counts', {})}")
+            print(f"Mutation counts: {summary.get('mutation_tier_counts', {})}")
+        return 0
+
+    if args.gpt_seed:
+        report = build_gpt_seed_extraction_report(
+            cases=default_coding_fortress_cases(),
+            cases_path=args.cases,
+            model=args.teacher_model,
+            limit=args.limit,
+        )
+        out_dir = Path(args.out_dir).resolve() if args.out_dir else _default_report_dir("gpt_seed_teacher_bank")
+        artifacts = write_coding_fortress_extraction_artifacts(report=report, out_dir=out_dir)
+        if args.json:
+            _print_json(
+                {
+                    "artifacts": artifacts,
+                    "teacher_model": report.get("teacher_model", ""),
+                    "seed_bank_id": report.get("seed_bank_id", ""),
+                    "case_count": report.get("case_count", 0),
+                    "completed_case_count": report.get("completed_case_count", 0),
+                    "failure_count": report.get("failure_count", 0),
+                    "teacher_residual_count": report.get("teacher_residual_count", 0),
+                    "case_summary": report.get("case_summary", {}),
+                }
+            )
+        else:
+            print(f"Wrote GPT seed bank JSON: {artifacts['report_json']}")
+            print(f"Wrote GPT seed bank Markdown: {artifacts['report_markdown']}")
+            print(f"Wrote GPT seed traces JSONL: {artifacts['teacher_traces_jsonl']}")
+            print(
+                "Summary: "
+                f"cases {report.get('completed_case_count', 0)}/{report.get('case_count', 0)} | "
+                f"retrieval cases {report.get('case_summary', {}).get('retrieval_case_count', 0)} | "
+                f"seed {report.get('seed_bank_id', '')}"
+            )
+        return 0
+
+    if args.teacher_only:
+        teacher_client = _build_universal_llm_client(provider=args.teacher_provider, base_url=args.teacher_base_url)
+        report = run_coding_fortress_extraction(
+            cases=default_coding_fortress_cases(),
+            cases_path=args.cases,
+            teacher_model=args.teacher_model,
+            teacher_client=teacher_client,
+            temperature=args.temperature,
+            num_ctx=args.num_ctx,
+            limit=args.limit,
+        )
+        out_dir = Path(args.out_dir).resolve() if args.out_dir else _default_report_dir("coding_fortress_extraction")
+        artifacts = write_coding_fortress_extraction_artifacts(report=report, out_dir=out_dir)
+        if args.json:
+            _print_json(
+                {
+                    "artifacts": artifacts,
+                    "teacher_model": report.get("teacher_model", ""),
+                    "case_count": report.get("case_count", 0),
+                    "completed_case_count": report.get("completed_case_count", 0),
+                    "failure_count": report.get("failure_count", 0),
+                    "teacher_residual_count": report.get("teacher_residual_count", 0),
+                    "case_summary": report.get("case_summary", {}),
+                }
+            )
+        else:
+            print(f"Wrote coding fortress extraction JSON: {artifacts['report_json']}")
+            print(f"Wrote coding fortress extraction Markdown: {artifacts['report_markdown']}")
+            print(f"Wrote teacher traces JSONL: {artifacts['teacher_traces_jsonl']}")
+            print(
+                "Summary: "
+                f"cases {report.get('completed_case_count', 0)}/{report.get('case_count', 0)} | "
+                f"teacher residuals {report.get('teacher_residual_count', 0)} | "
+                f"retrieval cases {report.get('case_summary', {}).get('retrieval_case_count', 0)}"
+            )
+        return 0
+
+    if not args.student_model:
+        raise SystemExit("--student-model is required unless --teacher-only or --dry-run is set")
+
+    teacher_client = _build_universal_llm_client(provider=args.teacher_provider, base_url=args.teacher_base_url)
+    student_client = _build_universal_llm_client(provider=args.student_provider, base_url=args.student_base_url)
+    report = run_coding_fortress_benchmark(
+        cases=default_coding_fortress_cases(),
+        cases_path=args.cases,
+        teacher_model=args.teacher_model,
+        student_model=args.student_model,
+        teacher_client=teacher_client,
+        student_client=student_client,
+        temperature=args.temperature,
+        num_ctx=args.num_ctx,
+        limit=args.limit,
+    )
+    out_dir = Path(args.out_dir).resolve() if args.out_dir else _default_report_dir("coding_fortress")
+    artifacts = write_coding_fortress_artifacts(report=report, out_dir=out_dir)
+    if args.json:
+        _print_json(
+            {
+                "artifacts": artifacts,
+                "teacher_model": report.get("teacher_model", ""),
+                "student_model": report.get("student_model", ""),
+                "case_count": report.get("case_count", 0),
+                "completed_case_count": report.get("completed_case_count", 0),
+                "avg_weighted_score": report.get("avg_weighted_score", 0.0),
+                "negative_transfer_count": report.get("negative_transfer_count", 0),
+                "active_rule_count": report.get("active_rule_count", 0),
+                "failure_count": report.get("failure_count", 0),
+            }
+        )
+    else:
+        print(f"Wrote coding fortress JSON: {artifacts['report_json']}")
+        print(f"Wrote coding fortress Markdown: {artifacts['report_markdown']}")
+        print(f"Wrote teacher traces JSONL: {artifacts['teacher_traces_jsonl']}")
+        print(f"Wrote student traces JSONL: {artifacts['student_traces_jsonl']}")
+        print(f"Wrote meta ledger JSON: {artifacts['ledger_json']}")
+        print(
+            "Summary: "
+            f"cases {report.get('completed_case_count', 0)}/{report.get('case_count', 0)} | "
+            f"avg score {report.get('avg_weighted_score', 0.0)} | "
+            f"negative transfer {report.get('negative_transfer_count', 0)} | "
+            f"active rules {report.get('active_rule_count', 0)}"
+        )
+    return 0
+
+
+def _build_agency_teacher_client(args: argparse.Namespace) -> UniversalLLMClient:
+    provider = UniversalLLMClient._normalize_provider(
+        args.teacher_provider or DEFAULT_AGENCY_AUTOMATION_TEACHER_PROVIDER
+    )
+    base_url = args.teacher_base_url or UniversalLLMClient._default_base_url_from_env(provider)
+    api_key = str(args.api_key or "").strip() or os.environ.get("LLM_API_KEY")
+    if provider == "github_models" and not api_key:
+        api_key = os.environ.get("GITHUB_MODELS_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if provider == "gemini" and not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if provider != "ollama" and not api_key:
+        raise SystemExit(
+            "Teacher provider requires an API key. Set GEMINI_API_KEY/LLM_API_KEY or pass --api-key. "
+            "Use --dry-run to build the architecture without calling a model."
+        )
+    return UniversalLLMClient(provider=provider, base_url=base_url, api_key=api_key)
+
+
+def _handle_agency_automate(args: argparse.Namespace) -> int:
+    ledger = None
+    if args.ledger:
+        ledger_path = Path(args.ledger).expanduser().resolve()
+        if ledger_path.exists():
+            ledger = GlobalTransmutationLedger.read_json(ledger_path)
+        elif not args.dry_run:
+            ledger = GlobalTransmutationLedger()
+
+    teacher_client = None if args.dry_run else _build_agency_teacher_client(args)
+    report = run_agency_automation(
+        prompt=args.prompt,
+        observation=args.observation,
+        app_family=args.app_family,
+        page_kind=args.page_kind,
+        known_evidence=args.known_evidence or [],
+        missing_evidence=args.missing_evidence or [],
+        failed_actions=args.failed_action or [],
+        teacher_model=args.teacher_model,
+        teacher_client=teacher_client,
+        temperature=args.temperature,
+        num_ctx=args.num_ctx,
+        dry_run=args.dry_run,
+        ledger=ledger,
+    )
+    out_dir = Path(args.out_dir).resolve() if args.out_dir else _default_report_dir("agency_automation")
+    artifacts = write_agency_automation_artifacts(report=report, out_dir=out_dir)
+    if args.json:
+        _print_json(
+            {
+                "artifacts": artifacts,
+                "teacher_model": report.get("teacher_model", ""),
+                "teacher_call_status": report.get("teacher_call_status", ""),
+                "constraint_count": report.get("constraint_count", 0),
+                "ungrounded_constraint_count": report.get("ungrounded_constraint_count", 0),
+                "confusion_type": report.get("confusion", {}).get("uncertainty_type", ""),
+                "micro_fortress_id": report.get("micro_fortress", {}).get("micro_fortress_id", ""),
+                "estimated_teacher_input_tokens": report.get("micro_fortress", {})
+                .get("teacher_prompt_budget", {})
+                .get("estimated_teacher_input_tokens", 0),
+                "compressed_transmutation_count": report.get("compressed_transmutation_count", 0),
+                "ledger_summary": report.get("ledger_summary", {}),
+                "failure_count": report.get("failure_count", 0),
+            }
+        )
+    else:
+        print(f"Wrote agency automation JSON: {artifacts['report_json']}")
+        print(f"Wrote agency automation Markdown: {artifacts['report_markdown']}")
+        print(f"Wrote micro-fortress plan: {artifacts['micro_fortress_json']}")
+        print(f"Wrote compressed bank JSONL: {artifacts['compressed_bank_jsonl']}")
+        print(f"Wrote meta ledger JSON: {artifacts['ledger_json']}")
+        print(
+            "Summary: "
+            f"teacher {report.get('teacher_call_status', '')} | "
+            f"constraints {report.get('constraint_count', 0)} | "
+            f"ungrounded {report.get('ungrounded_constraint_count', 0)} | "
+            f"confusion {report.get('confusion', {}).get('uncertainty_type', '')} | "
+            f"compressed rules {report.get('compressed_transmutation_count', 0)}"
+        )
     return 0
 
 
@@ -1173,6 +1428,61 @@ def _handle_distill_finance_pretrade(args: argparse.Namespace) -> int:
             f"rows used {report.get('rows_used', 0)} | "
             f"source models {report.get('source_models', {})}"
         )
+    return 0
+
+
+def _handle_aml_disposition_benchmark(args: argparse.Namespace) -> int:
+    report = run_aml_disposition_benchmark(
+        cases_path=args.cases,
+        case_ids=list(args.case_id or []),
+        limit=args.limit,
+        raw_model=args.raw_model,
+        memla_model=args.memla_model,
+        raw_iterations=args.raw_iterations,
+        memla_iterations=args.memla_iterations,
+        temperature=args.temperature,
+        num_ctx=args.num_ctx,
+        raw_provider=args.raw_provider,
+        raw_base_url=args.raw_base_url,
+        memla_provider=args.memla_provider,
+        memla_base_url=args.memla_base_url,
+    )
+    markdown = render_aml_disposition_markdown(report)
+    out_dir = Path(args.out_dir).resolve() if args.out_dir else _default_report_dir("aml_disposition_benchmark")
+    json_path, md_path = _write_report_bundle(
+        report=report,
+        markdown=markdown,
+        out_dir=out_dir,
+        stem="aml_disposition_benchmark_report",
+    )
+    print(f"Wrote AML benchmark JSON: {json_path}")
+    print(f"Wrote AML benchmark Markdown: {md_path}")
+    utility_index = report.get("memla_vs_raw_aml_utility_index")
+    utility_text = utility_index if utility_index is not None else "n/a"
+    print(
+        "Summary: "
+        f"raw utility {report.get('avg_raw_aml_utility', 0.0)} | "
+        f"memla utility {report.get('avg_memla_aml_utility', 0.0)} | "
+        f"utility index {utility_text}"
+    )
+    return 0
+
+
+def _handle_amlsim_case_conversion(args: argparse.Namespace) -> int:
+    summary = write_amlsim_cases_jsonl(
+        args.archive,
+        args.output,
+        max_cases=args.max_cases,
+        reject_ratio=args.reject_ratio,
+        seed=args.seed,
+    )
+    print(f"Wrote AMLSim-derived Memla cases: {Path(args.output).resolve()}")
+    print(
+        "Summary: "
+        f"total {summary.get('total', 0)} | "
+        f"reject {summary.get('reject', 0)} | "
+        f"clear {summary.get('clear', 0)}"
+    )
     return 0
 
 
@@ -2072,6 +2382,27 @@ def _build_parser() -> argparse.ArgumentParser:
     c2a_parser.add_argument("--out-dir", default="", help="Directory for report artifacts. Defaults to ./memla_reports/<timestamp>.")
     c2a_parser.set_defaults(func=_handle_c2a_benchmark)
 
+    fortress_parser = coding_sub.add_parser(
+        "benchmark-fortress",
+        help="Run teacher-vs-student coding fortress transmutation extraction and meta-ledger scoring.",
+    )
+    fortress_parser.add_argument("--cases", default="", help="Optional coding fortress case JSONL. Defaults to the built-in seed fortress pack.")
+    fortress_parser.add_argument("--teacher-model", required=True, help="Teacher model used to extract target transmutations.")
+    fortress_parser.add_argument("--student-model", default="", help="Student model to compare against the teacher. Required unless --teacher-only or --dry-run is set.")
+    fortress_parser.add_argument("--teacher-provider", default="", help="Optional provider override for the teacher lane, e.g. gemini.")
+    fortress_parser.add_argument("--teacher-base-url", default="", help="Optional base URL override for the teacher lane.")
+    fortress_parser.add_argument("--student-provider", default="", help="Optional provider override for the student lane, e.g. ollama.")
+    fortress_parser.add_argument("--student-base-url", default="", help="Optional base URL override for the student lane.")
+    fortress_parser.add_argument("--temperature", type=float, default=0.1)
+    fortress_parser.add_argument("--num-ctx", type=int, default=None)
+    fortress_parser.add_argument("--limit", type=int, default=0, help="Optional case limit for cheap smoke runs.")
+    fortress_parser.add_argument("--out-dir", default="", help="Directory for report artifacts. Defaults to ./memla_reports/<timestamp>.")
+    fortress_parser.add_argument("--dry-run", action="store_true", help="Print case and token estimates without calling any model.")
+    fortress_parser.add_argument("--gpt-seed", action="store_true", help="Write the built-in Codex/GPT teacher seed transmutation bank without calling any model.")
+    fortress_parser.add_argument("--teacher-only", action="store_true", help="Extract only teacher transmutation traces without running a student lane.")
+    fortress_parser.add_argument("--json", action="store_true", help="Print the artifact summary as JSON.")
+    fortress_parser.set_defaults(func=_handle_coding_fortress_benchmark)
+
     extract_parser = coding_sub.add_parser("extract-c2a", help="Extract normalized teacher-vs-Memla rows from coding C2A benchmark reports.")
     extract_parser.add_argument(
         "--report",
@@ -2101,6 +2432,43 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     distill_parser.add_argument("--json", action="store_true", help="Print the distillation summary as JSON.")
     distill_parser.set_defaults(func=_handle_distill_c2a)
+
+    agency_parser = subparsers.add_parser("agency", help="Run agency automation, live micro-fortresses, and meta-fortress capture.")
+    agency_sub = agency_parser.add_subparsers(dest="agency_command")
+    agency_auto = agency_sub.add_parser(
+        "automate",
+        help="Create a meta-fortress micro-fortress from agency confusion and optionally call a teacher model.",
+    )
+    agency_auto.add_argument(
+        "--prompt",
+        default="Doordash me two large cheese pizzas from Dominos and stop before payment.",
+        help="Agency task prompt. Defaults to a hard DoorDash quantity and boundary case.",
+    )
+    agency_auto.add_argument("--observation", default="", help="Optional live page/screen observation text.")
+    agency_auto.add_argument("--app-family", default="", help="Optional app family override, e.g. doordash, ubereats, uber, messaging.")
+    agency_auto.add_argument("--page-kind", default="", help="Optional current page kind, e.g. dd_item_modal or dd_checkout.")
+    agency_auto.add_argument("--known-evidence", action="append", default=[], help="Evidence Memla already has. Repeat for multiple items.")
+    agency_auto.add_argument("--missing-evidence", action="append", default=[], help="Evidence Memla is missing. Repeat for multiple items.")
+    agency_auto.add_argument("--failed-action", action="append", default=[], help="Failed or uncertain prior action. Repeat for multiple items.")
+    agency_auto.add_argument(
+        "--teacher-model",
+        default=os.environ.get("MEMLA_TEACHER_MODEL", DEFAULT_AGENCY_AUTOMATION_TEACHER_MODEL),
+        help="Teacher model. Defaults to MEMLA_TEACHER_MODEL or Gemini Flash-Lite.",
+    )
+    agency_auto.add_argument(
+        "--teacher-provider",
+        default=os.environ.get("MEMLA_TEACHER_PROVIDER", DEFAULT_AGENCY_AUTOMATION_TEACHER_PROVIDER),
+        help="Teacher provider. Defaults to gemini.",
+    )
+    agency_auto.add_argument("--teacher-base-url", default="", help="Optional teacher base URL override.")
+    agency_auto.add_argument("--api-key", default="", help="Teacher API key. Prefer GEMINI_API_KEY or LLM_API_KEY when possible.")
+    agency_auto.add_argument("--ledger", default="", help="Optional existing global_transmutation_ledger.json for meta-fortress priors.")
+    agency_auto.add_argument("--temperature", type=float, default=0.1)
+    agency_auto.add_argument("--num-ctx", type=int, default=None)
+    agency_auto.add_argument("--out-dir", default="", help="Directory for artifacts. Defaults to ./memla_reports/<timestamp>.")
+    agency_auto.add_argument("--dry-run", action="store_true", help="Build architecture artifacts without calling a model.")
+    agency_auto.add_argument("--json", action="store_true", help="Print the artifact summary as JSON.")
+    agency_auto.set_defaults(func=_handle_agency_automate)
 
     research_parser = subparsers.add_parser("research", help="Run bounded deep-research loop capture and benchmarks.")
     research_sub = research_parser.add_subparsers(dest="research_command")
@@ -2309,6 +2677,53 @@ def _build_parser() -> argparse.ArgumentParser:
     healthcare_bench.add_argument("--memla-base-url", default="", help="Optional base URL override for the Memla lane.")
     healthcare_bench.add_argument("--out-dir", default="", help="Directory for report artifacts. Defaults to ./memla_reports/<timestamp>.")
     healthcare_bench.set_defaults(func=_handle_healthcare_denial_benchmark)
+
+    aml_parser = subparsers.add_parser("aml", help="Run AML alert disposition benchmarks.")
+    aml_sub = aml_parser.add_subparsers(dest="aml_command")
+    aml_bench = aml_sub.add_parser("benchmark-disposition", help="Run an AML alert disposition replay benchmark.")
+    aml_bench.add_argument("--cases", required=True, help="AML alert disposition case JSONL path.")
+    aml_bench.add_argument("--case-id", action="append", default=[], help="Optional case id filter. Repeat to run only specific AML cases.")
+    aml_bench.add_argument("--limit", type=int, default=None, help="Optional max number of AML cases to run after filtering.")
+    aml_bench.add_argument("--raw-model", required=True, help="Baseline raw model.")
+    aml_bench.add_argument("--memla-model", required=True, help="Memla repair-loop model.")
+    aml_bench.add_argument("--raw-iterations", type=int, default=1, help="How many attempts the raw lane gets.")
+    aml_bench.add_argument("--memla-iterations", type=int, default=3, help="How many verifier-backed repair attempts the Memla lane gets.")
+    aml_bench.add_argument("--temperature", type=float, default=0.1)
+    aml_bench.add_argument("--num-ctx", type=int, default=None)
+    aml_bench.add_argument("--raw-provider", default="", help="Optional provider override for the raw lane.")
+    aml_bench.add_argument("--raw-base-url", default="", help="Optional base URL override for the raw lane.")
+    aml_bench.add_argument("--memla-provider", default="", help="Optional provider override for the Memla lane.")
+    aml_bench.add_argument("--memla-base-url", default="", help="Optional base URL override for the Memla lane.")
+    aml_bench.add_argument("--out-dir", default="", help="Directory for report artifacts. Defaults to ./memla_reports/<timestamp>.")
+    aml_bench.set_defaults(func=_handle_aml_disposition_benchmark)
+    aml_convert = aml_sub.add_parser(
+        "convert-amlsim-cases",
+        help="Convert IBM AMLSim archive exports into Memla AML disposition JSONL cases.",
+    )
+    aml_convert.add_argument(
+        "--archive",
+        default="archive.zip.gz",
+        help="Path to AMLSim archive (.zip or .zip.gz). Defaults to ./archive.zip.gz.",
+    )
+    aml_convert.add_argument(
+        "--output",
+        default="cases/aml_amlsim_synthetic_eval_cases.jsonl",
+        help="Output JSONL path for converted Memla cases.",
+    )
+    aml_convert.add_argument(
+        "--max-cases",
+        type=int,
+        default=500,
+        help="Maximum number of cases to emit. Use 0 for all available reject/clear candidates.",
+    )
+    aml_convert.add_argument(
+        "--reject-ratio",
+        type=float,
+        default=0.5,
+        help="Target fraction of hard-hit reject cases when --max-cases caps output.",
+    )
+    aml_convert.add_argument("--seed", type=int, default=0, help="Random seed for clear-case sampling.")
+    aml_convert.set_defaults(func=_handle_amlsim_case_conversion)
 
     policy_parser = subparsers.add_parser("policy", help="Run policy-as-code authorization benchmarks.")
     policy_sub = policy_parser.add_subparsers(dest="policy_command")

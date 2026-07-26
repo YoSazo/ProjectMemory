@@ -200,6 +200,91 @@ def test_github_models_from_env_uses_github_token_fallback(monkeypatch):
     assert client.api_key == "gh-env-token"
 
 
+def test_gemini_uses_generate_content_endpoint_and_api_key_header(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_post(url, *, json, timeout, headers):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        captured["headers"] = headers
+        return _DummyResponse(200, {"output_text": "ok"})
+
+    monkeypatch.setattr("memory_system.ollama_client.requests.post", fake_post)
+
+    client = UniversalLLMClient(
+        provider="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        api_key="gem-test-key",
+    )
+    out = client.chat(
+        model="gemini-2.0-flash-lite",
+        messages=[
+            ChatMessage(role="system", content="Return JSON only."),
+            ChatMessage(role="user", content="hello"),
+        ],
+        temperature=0.15,
+    )
+
+    assert out == "ok"
+    assert captured["url"] == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-lite:generateContent"
+    assert captured["json"] == {
+        "contents": [{"role": "user", "parts": [{"text": "hello"}]}],
+        "generationConfig": {
+            "temperature": 0.15,
+            "responseMimeType": "application/json",
+        },
+        "systemInstruction": {"parts": [{"text": "Return JSON only."}]},
+    }
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["x-goog-api-key"] == "gem-test-key"
+    assert headers["Content-Type"] == "application/json"
+
+
+def test_gemini_from_env_uses_gemini_key_fallback(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "gem-env-key")
+
+    client = UniversalLLMClient.from_env()
+
+    assert client.provider == "gemini"
+    assert client.base_url == "https://generativelanguage.googleapis.com/v1beta"
+    assert client.api_key == "gem-env-key"
+
+
+def test_gemini_http_error_includes_response_body(monkeypatch):
+    calls: list[int] = []
+
+    def fake_post(*args, **kwargs):
+        calls.append(1)
+        return _DummyResponse(429, {"error": {"message": "quota exhausted for generateContent"}})
+
+    monkeypatch.setattr("memory_system.ollama_client.requests.post", fake_post)
+    monkeypatch.setattr("memory_system.ollama_client.time.sleep", lambda *_args, **_kwargs: None)
+
+    client = UniversalLLMClient(
+        provider="gemini",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+        api_key="gem-test-key",
+    )
+
+    try:
+        client.chat(
+            model="gemini-2.0-flash-lite",
+            messages=[ChatMessage(role="user", content="hello")],
+        )
+    except RuntimeError as exc:
+        assert "Gemini HTTP 429" in str(exc)
+        assert "quota exhausted for generateContent" in str(exc)
+    else:
+        raise AssertionError("Expected a RuntimeError for Gemini quota exhaustion.")
+
+    assert len(calls) == 4
+
+
 def test_ollama_from_env_uses_ollama_host_fallback(monkeypatch):
     monkeypatch.delenv("LLM_PROVIDER", raising=False)
     monkeypatch.delenv("LLM_BASE_URL", raising=False)

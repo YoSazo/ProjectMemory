@@ -29,6 +29,7 @@ memla coding run --prompt "Repair the failing auth tests" --repo-root . --model 
 Core use cases:
 - local coding workflow planning and repair
 - finance pre-trade compliance replay and remediation backtesting
+- AML alert disposition replay and audit-trail benchmarking
 - coding patch-execution, compile-loop, and pure coding C2A benchmarks
 - bounded math benchmarks for decision-layer evaluation
 - proof-pack generation for static report sites
@@ -57,6 +58,7 @@ memla coding benchmark-c2a --cases cases/coding_eval_cases.jsonl --repo-root . -
 memla finance benchmark-pretrade --cases cases/finance_pretrade_eval_cases.jsonl --raw-model meta/Llama-3.3-70B-Instruct --memla-model qwen3.5:9b
 memla finance benchmark-pretrade --cases cases/finance_pretrade_public_eval_cases.jsonl --raw-model qwen3.5:9b --memla-model qwen3.5:9b --raw-provider ollama --raw-base-url http://127.0.0.1:11435 --memla-provider ollama --memla-base-url http://127.0.0.1:11435
 memla healthcare benchmark-denials --cases cases/healthcare_denial_eval_cases.jsonl --raw-model qwen3.5:9b --memla-model qwen3.5:9b --raw-provider ollama --raw-base-url http://127.0.0.1:11435 --memla-provider ollama --memla-base-url http://127.0.0.1:11435
+memla aml benchmark-disposition --cases cases/aml_alert_public_eval_cases.jsonl --raw-model qwen3.5:9b --memla-model qwen3.5:9b --raw-provider ollama --raw-base-url http://127.0.0.1:11435 --memla-provider ollama --memla-base-url http://127.0.0.1:11435
 memla policy benchmark-authz --cases cases/policy_authz_eval_cases.jsonl --raw-model qwen3.5:9b --memla-model qwen3.5:9b --raw-provider ollama --raw-base-url http://127.0.0.1:11435 --memla-provider ollama --memla-base-url http://127.0.0.1:11435
 memla terminal benchmark --model phi3
 memla terminal benchmark-browser --model phi3
@@ -118,6 +120,7 @@ curl -X POST http://127.0.0.1:8080/scout ^
 
 Public provenance for the bundled finance demo pack lives in `cases/finance_pretrade_public_sources.md`.
 Public provenance for the bundled healthcare demo pack lives in `cases/healthcare_denial_public_sources.md`.
+Public provenance for the bundled AML demo pack lives in `cases/aml_alert_public_sources.md`.
 Public provenance for the bundled policy demo pack lives in `cases/policy_authz_public_sources.md`.
 
 Project links:
