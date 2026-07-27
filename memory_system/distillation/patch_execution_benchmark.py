@@ -2104,9 +2104,10 @@ def _build_llm_client(
     resolved_provider = str(provider or os.environ.get("LLM_PROVIDER", "ollama")).strip()
     normalized_provider = UniversalLLMClient._normalize_provider(resolved_provider)
     resolved_base_url = str(base_url or UniversalLLMClient._default_base_url_from_env(normalized_provider)).strip()
-    resolved_api_key = api_key or os.environ.get("LLM_API_KEY")
-    if normalized_provider == "github_models" and not resolved_api_key:
-        resolved_api_key = os.environ.get("GITHUB_MODELS_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if normalized_provider == "github_models":
+        resolved_api_key = api_key or os.environ.get("GITHUB_MODELS_TOKEN") or os.environ.get("GITHUB_TOKEN") or os.environ.get("LLM_API_KEY")
+    else:
+        resolved_api_key = api_key or os.environ.get("LLM_API_KEY")
     return UniversalLLMClient(
         provider=normalized_provider,
         base_url=resolved_base_url,

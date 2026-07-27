@@ -7,11 +7,16 @@ import pytest
 from memory_system.cli import main
 from memory_system.fortresses.agency_quantity_replay import (
     DEFAULT_AGENCY_LEDGER_PATH,
+    LANE_NVIDIA_NO_ABOVE,
+    LANE_NVIDIA_NO_BELOW,
+    LANE_NVIDIA_NO_VERIFIER,
+    LANE_NVIDIA_SWAP_DIRECTION,
     LANE_NVIDIA_FAMILY_ONLY,
     LANE_NVIDIA_SEMANTIC,
     QUANTITY_RULE_ID,
     _semantic_compiled_runtime_policy,
     _student_bank_packet,
+    build_quantity_student_messages,
     default_quantity_replay_cases,
     extract_live_quantity_teacher_rule,
     quantity_transmutation_to_ledger_entry,
@@ -274,6 +279,20 @@ def test_semantic_compiler_does_not_invent_quantity_actions_without_teacher_fiel
     assert policy["teacher_policy_clauses"]["teacher_actions_present"]["below"] is False
 
 
+def test_student_prompt_hides_lane_identity_when_bank_is_empty():
+    case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_digit_2")
+    raw_user = json.loads(
+        build_quantity_student_messages(case=case, retrieved_rules=[], trial_index=3, lane="raw")[1].content
+    )
+    semantic_user = json.loads(
+        build_quantity_student_messages(case=case, retrieved_rules=[], trial_index=3, lane=LANE_NVIDIA_SEMANTIC)[1].content
+    )
+
+    assert "bank_lane" not in raw_user
+    assert "bank_lane" not in semantic_user
+    assert semantic_user == raw_user
+
+
 def test_nvidia_semantic_and_family_only_packets_separate_teacher_knowledge():
     ledger, raw_hash, rule_id = _nvidia_quantity_ledger()
     case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_digit_2")
@@ -293,6 +312,49 @@ def test_nvidia_semantic_and_family_only_packets_separate_teacher_knowledge():
     assert semantic_packet[0]["runtime_policy"]["teacher_policy_clauses"]["action_when_below_target"]
     assert "constraint_family" in family_packet[0]["runtime_policy"]
     assert "choose" not in family_packet[0]["runtime_policy"]
+
+
+def test_nvidia_semantic_clause_ablation_packets_are_causal():
+    ledger, raw_hash, _rule_id = _nvidia_quantity_ledger()
+    below_case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_quantity_three")
+    above_case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_accidental_three")
+    equal_case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_already_two")
+
+    below_rule = retrieve_quantity_rules(
+        ledger=ledger,
+        snapshot=below_case.snapshot(),
+        policy_kind=LANE_NVIDIA_SEMANTIC,
+        require_provenance_hash=raw_hash,
+        source_filter="nvidia",
+    )
+    above_rule = retrieve_quantity_rules(
+        ledger=ledger,
+        snapshot=above_case.snapshot(),
+        policy_kind=LANE_NVIDIA_SEMANTIC,
+        require_provenance_hash=raw_hash,
+        source_filter="nvidia",
+    )
+    equal_rule = retrieve_quantity_rules(
+        ledger=ledger,
+        snapshot=equal_case.snapshot(),
+        policy_kind=LANE_NVIDIA_SEMANTIC,
+        require_provenance_hash=raw_hash,
+        source_filter="nvidia",
+    )
+
+    no_below = _student_bank_packet(below_rule, lane=LANE_NVIDIA_NO_BELOW, snapshot=below_case.snapshot())[0]["runtime_policy"]
+    no_above = _student_bank_packet(above_rule, lane=LANE_NVIDIA_NO_ABOVE, snapshot=above_case.snapshot())[0]["runtime_policy"]
+    swapped = _student_bank_packet(below_rule, lane=LANE_NVIDIA_SWAP_DIRECTION, snapshot=below_case.snapshot())[0]["runtime_policy"]
+    no_verifier = _student_bank_packet(equal_rule, lane=LANE_NVIDIA_NO_VERIFIER, snapshot=equal_case.snapshot())[0]["runtime_policy"]
+
+    assert no_below["when"] == "current_quantity < requested_quantity"
+    assert no_below["choose"] == ""
+    assert no_above["when"] == "current_quantity > requested_quantity"
+    assert no_above["choose"] == ""
+    assert "causal_clause_ablation" not in swapped
+    assert swapped["choose"] == "choose decrement/minus/stepper control scoped to requested item"
+    assert no_verifier["when"] == "current_quantity == requested_quantity"
+    assert no_verifier["choose"] == ""
 
 
 def test_nvidia_rule_is_quarantined_from_ubereats_without_explicit_transfer_scope():

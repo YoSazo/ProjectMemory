@@ -44,6 +44,23 @@ LANE_COMPILER_ONLY = "compiler_only_no_teacher"
 LANE_PLACEBO_COMPILED = "placebo_numeric_rule_compiled"
 LANE_NVIDIA_FAMILY_ONLY = "nvidia_constraint_family_only"
 LANE_NVIDIA_SEMANTIC = "nvidia_semantic_compiled"
+LANE_NVIDIA_NO_BELOW = "nvidia_semantic_no_below_increment"
+LANE_NVIDIA_NO_ABOVE = "nvidia_semantic_no_above_decrement"
+LANE_NVIDIA_SWAP_DIRECTION = "nvidia_semantic_swap_increment_decrement"
+LANE_NVIDIA_NO_VERIFIER = "nvidia_semantic_no_verifier"
+NVIDIA_SEMANTIC_LANES = {
+    LANE_NVIDIA_SEMANTIC,
+    LANE_NVIDIA_NO_BELOW,
+    LANE_NVIDIA_NO_ABOVE,
+    LANE_NVIDIA_SWAP_DIRECTION,
+    LANE_NVIDIA_NO_VERIFIER,
+}
+NVIDIA_PROVENANCE_LANES = {
+    LANE_NVIDIA_FULL,
+    LANE_NVIDIA_POLICY,
+    LANE_NVIDIA_FAMILY_ONLY,
+    *NVIDIA_SEMANTIC_LANES,
+}
 
 AUTHENTIC_ABLATION_LANES = (
     LANE_RAW,
@@ -59,6 +76,10 @@ AUTHENTIC_ABLATION_LANES = (
     LANE_PLACEBO_COMPILED,
     LANE_NVIDIA_FAMILY_ONLY,
     LANE_NVIDIA_SEMANTIC,
+    LANE_NVIDIA_NO_BELOW,
+    LANE_NVIDIA_NO_ABOVE,
+    LANE_NVIDIA_SWAP_DIRECTION,
+    LANE_NVIDIA_NO_VERIFIER,
 )
 
 
@@ -595,7 +616,7 @@ def retrieve_quantity_rules(
         if snapshot.app_family == "ubereats" and snapshot.app_family not in transfer_targets and entry.repo_family != snapshot.app_family:
             continue
         if policy_kind in nvidia_policy_kinds:
-            if current == requested:
+            if current == requested and policy_kind != LANE_NVIDIA_SEMANTIC:
                 continue
             if not (has_quantity_control or missing_evidence):
                 continue
@@ -735,10 +756,40 @@ def _teacher_policy_clauses(rule: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _semantic_compiled_runtime_policy(rule: dict[str, Any], snapshot: AgencyStateSnapshot) -> dict[str, Any]:
+def _apply_teacher_clause_ablation(clauses: dict[str, Any], ablation: str = "") -> dict[str, Any]:
+    data = json.loads(json.dumps(clauses, sort_keys=True, default=str))
+    if ablation == "remove_below_increment":
+        data["action_when_below_target"] = ""
+        data["teacher_actions_present"]["below"] = False
+    elif ablation == "remove_above_decrement":
+        data["action_when_above_target"] = ""
+        data["teacher_actions_present"]["above"] = False
+    elif ablation == "swap_increment_decrement":
+        data["action_when_below_target"], data["action_when_above_target"] = (
+            data.get("action_when_above_target", ""),
+            data.get("action_when_below_target", ""),
+        )
+    elif ablation == "remove_verifier":
+        data["action_when_equal"] = ""
+        data["expected_postcondition"] = ""
+        data["verifier"] = []
+        data["teacher_actions_present"]["equal"] = False
+    return data
+
+
+def _semantic_ablation_for_lane(lane: str) -> str:
+    return {
+        LANE_NVIDIA_NO_BELOW: "remove_below_increment",
+        LANE_NVIDIA_NO_ABOVE: "remove_above_decrement",
+        LANE_NVIDIA_SWAP_DIRECTION: "swap_increment_decrement",
+        LANE_NVIDIA_NO_VERIFIER: "remove_verifier",
+    }.get(lane, "")
+
+
+def _semantic_compiled_runtime_policy(rule: dict[str, Any], snapshot: AgencyStateSnapshot, *, ablation: str = "") -> dict[str, Any]:
     current = int(snapshot.metadata.get("current_quantity") or 0)
     requested = int(snapshot.metadata.get("requested_quantity") or 0)
-    clauses = _teacher_policy_clauses(rule)
+    clauses = _apply_teacher_clause_ablation(_teacher_policy_clauses(rule), ablation=ablation)
     if current < requested:
         when = "current_quantity < requested_quantity"
         choose = clauses["action_when_below_target"]
@@ -789,6 +840,10 @@ def _student_bank_packet(
             LANE_NVIDIA_FULL: LANE_FULL_RULE,
             LANE_NVIDIA_POLICY: LANE_POLICY,
             LANE_NVIDIA_SEMANTIC: LANE_NVIDIA_SEMANTIC,
+            LANE_NVIDIA_NO_BELOW: LANE_NVIDIA_SEMANTIC,
+            LANE_NVIDIA_NO_ABOVE: LANE_NVIDIA_SEMANTIC,
+            LANE_NVIDIA_SWAP_DIRECTION: LANE_NVIDIA_SEMANTIC,
+            LANE_NVIDIA_NO_VERIFIER: LANE_NVIDIA_SEMANTIC,
             LANE_COMPILER_ONLY: LANE_POLICY,
             LANE_PLACEBO_COMPILED: LANE_POLICY,
             LANE_NVIDIA_FAMILY_ONLY: LANE_NVIDIA_FAMILY_ONLY,
@@ -800,9 +855,18 @@ def _student_bank_packet(
         elif presentation_lane == LANE_POLICY:
             packet.append({**base, "runtime_policy": _control_compiled_runtime_policy(rule, snapshot)})
         elif presentation_lane == LANE_NVIDIA_SEMANTIC:
-            packet.append({**base, "runtime_policy": _semantic_compiled_runtime_policy(rule, snapshot)})
+            packet.append(
+                {
+                    **base,
+                    "runtime_policy": _semantic_compiled_runtime_policy(
+                        rule,
+                        snapshot,
+                        ablation=_semantic_ablation_for_lane(lane),
+                    ),
+                }
+            )
         elif presentation_lane == LANE_NVIDIA_FAMILY_ONLY:
-            packet.append({**base, "runtime_policy": _label_only_policy(rule, label="nvidia_constraint_family_only")})
+            packet.append({**base, "runtime_policy": _label_only_policy(rule, label="constraint_family_only")})
         elif presentation_lane == LANE_VERIFIER:
             packet.append({**base, "verifier": [str(item) for item in list(rule.get("verifier") or [])]})
         elif presentation_lane == LANE_BOUNDARY:
@@ -919,7 +983,7 @@ def _rules_for_quantity_lane(
         source_filter = "nvidia"
         provenance_hash = required_teacher_response_hash
         policy_kind = LANE_POLICY
-    elif lane == LANE_NVIDIA_SEMANTIC:
+    elif lane in NVIDIA_SEMANTIC_LANES:
         source_filter = "nvidia"
         provenance_hash = required_teacher_response_hash
         policy_kind = LANE_NVIDIA_SEMANTIC
@@ -957,7 +1021,6 @@ def build_quantity_student_messages(
         "residuals": list(snapshot.residuals),
         "candidate_actions": _candidate_rows(snapshot, expose_metadata=expose_candidate_metadata),
         "bank_packet": _student_bank_packet(retrieved_rules, lane=lane, snapshot=snapshot),
-        "bank_lane": lane,
         "candidate_metadata_visible": bool(expose_candidate_metadata),
         "trial_index": trial_index,
     }
@@ -1546,13 +1609,45 @@ def _raw_bank_payloads_differ_only_by_bank_packet(raw_payload: dict[str, Any], b
         try:
             user = json.loads(data["messages"][1]["content"])
             user["bank_packet"] = []
-            user["bank_lane"] = LANE_RAW
+            user.pop("bank_lane", None)
             data["messages"][1]["content"] = json.dumps(user, indent=2, sort_keys=True)
         except Exception:
             return data
         return data
 
     return _without_bank(raw_payload) == _without_bank(bank_payload)
+
+
+def _payload_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    metadata = dict(dict(row.get("trace") or {}).get("metadata") or {})
+    return dict(metadata.get("initial_model_request_payload") or metadata.get("model_request_payload") or {})
+
+
+def _empty_retrieval_prompts_match_raw(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    pairs: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        case = dict(row.get("case") or {})
+        metadata = dict(dict(row.get("trace") or {}).get("metadata") or {})
+        key = (str(case.get("case_id") or ""), int(metadata.get("trial_index") or 0))
+        pairs.setdefault(key, {})[str(row.get("lane") or "")] = row
+    checked = 0
+    mismatches = 0
+    for pair in pairs.values():
+        raw = pair.get(LANE_RAW)
+        if raw is None:
+            continue
+        raw_payload = _payload_from_row(raw)
+        for lane, row in pair.items():
+            if lane == LANE_RAW or list(row.get("retrieved_rules") or []):
+                continue
+            checked += 1
+            if _payload_from_row(row) != raw_payload:
+                mismatches += 1
+    return {
+        "empty_retrieval_prompt_pair_count": checked,
+        "empty_retrieval_prompt_mismatch_count": mismatches,
+        "empty_retrieval_prompts_match_raw": mismatches == 0,
+    }
 
 
 def _paired_discordance(rows: list[dict[str, Any]], lane: str) -> dict[str, Any]:
@@ -1585,10 +1680,8 @@ def _paired_discordance(rows: list[dict[str, Any]], lane: str) -> dict[str, Any]
             lane_only += 1
         else:
             both_fail += 1
-        raw_metadata = dict(dict(raw.get("trace") or {}).get("metadata") or {})
-        other_metadata = dict(dict(other.get("trace") or {}).get("metadata") or {})
-        raw_payload = raw_metadata.get("initial_model_request_payload") or raw_metadata.get("model_request_payload") or {}
-        other_payload = other_metadata.get("initial_model_request_payload") or other_metadata.get("model_request_payload") or {}
+        raw_payload = _payload_from_row(raw)
+        other_payload = _payload_from_row(other)
         if not _raw_bank_payloads_differ_only_by_bank_packet(raw_payload, other_payload):
             bank_packet_only = False
     total_discordant = raw_only + lane_only
@@ -1599,7 +1692,7 @@ def _paired_discordance(rows: list[dict[str, Any]], lane: str) -> dict[str, Any]
         from math import comb
 
         tail = sum(comb(total_discordant, k) for k in range(wins + 1)) / (2**total_discordant)
-        sign_test_p_value = round(min(1.0, 2 * tail), 6)
+        sign_test_p_value = round(min(1.0, 2 * tail), 12)
     return {
         "lane": lane,
         "paired_count": comparable,
@@ -1778,6 +1871,7 @@ def run_quantity_model_authentic_replay(
     primary_bank_lane = _primary_bank_lane(active_lanes)
     bank_metrics = lane_metrics.get(primary_bank_lane, _lane_metrics(rows, primary_bank_lane))
     paired = [_paired_discordance(rows, lane) for lane in active_lanes if lane != LANE_RAW]
+    empty_retrieval_prompt_audit = _empty_retrieval_prompts_match_raw(rows)
     def _episode_count(row: dict[str, Any], field: str) -> int:
         steps = list(row.get("episode_steps") or [])
         if steps:
@@ -1801,20 +1895,20 @@ def run_quantity_model_authentic_replay(
         lane = str(row.get("lane") or "")
         for rule in list(row.get("retrieved_rules") or []):
             retrieved_rule_ids.append(str(rule.get("rule_id") or ""))
-            if required_teacher_response_hash and lane in {LANE_NVIDIA_FULL, LANE_NVIDIA_POLICY, LANE_NVIDIA_SEMANTIC, LANE_NVIDIA_FAMILY_ONLY}:
+            if required_teacher_response_hash and lane in NVIDIA_PROVENANCE_LANES:
                 metadata = dict(rule.get("metadata") or {})
                 if str(metadata.get("raw_teacher_response_hash") or "") != required_teacher_response_hash:
                     retrieved_hash_mismatches += 1
     nvidia_ubereats_retrievals = [
         row
         for row in rows
-        if str(row.get("lane") or "") in {LANE_NVIDIA_FULL, LANE_NVIDIA_POLICY, LANE_NVIDIA_SEMANTIC, LANE_NVIDIA_FAMILY_ONLY}
+        if str(row.get("lane") or "") in NVIDIA_PROVENANCE_LANES
         and "ubereats" in str(dict(row.get("case") or {}).get("case_id") or "")
         and list(row.get("retrieved_rules") or [])
     ]
     semantic_artifacts: dict[str, dict[str, Any]] = {}
     for row in rows:
-        if str(row.get("lane") or "") != LANE_NVIDIA_SEMANTIC:
+        if str(row.get("lane") or "") not in NVIDIA_SEMANTIC_LANES:
             continue
         for rule in list(row.get("retrieved_rules") or []):
             rule_id = str(rule.get("rule_id") or "")
@@ -1844,6 +1938,7 @@ def run_quantity_model_authentic_replay(
         "candidate_metadata_visible": bool(expose_candidate_metadata),
         "retrieved_rule_ids": sorted(set(retrieved_rule_ids)),
         "retrieved_rule_provenance_hash_mismatch_count": retrieved_hash_mismatches,
+        **empty_retrieval_prompt_audit,
         "compiler_only_no_teacher_uses_control_compiler": LANE_COMPILER_ONLY in active_lanes,
         "placebo_numeric_rule_uses_control_compiler": LANE_PLACEBO_COMPILED in active_lanes,
         "nvidia_semantic_compiler_invents_quantity_actions": False,
