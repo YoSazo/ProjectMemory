@@ -142,6 +142,7 @@ from .fortresses.agency_quantity_replay import (
     run_quantity_model_authentic_replay,
     run_quantity_replay_proof,
     seed_quantity_teacher_transmutation,
+    write_quantity_micro_fortresses,
     write_sanitized_quantity_proof,
     write_quantity_manifests,
     write_quantity_replay_report,
@@ -925,6 +926,10 @@ def _handle_agency_nvidia_smoke(args: argparse.Namespace) -> int:
 
 def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
     ledger_path = Path(args.ledger or DEFAULT_AGENCY_LEDGER_PATH).expanduser().resolve()
+    out_dir = Path(args.out_dir).resolve() if args.out_dir else _default_report_dir("agency_quantity_replay")
+    artifacts: dict[str, str] = {}
+    artifacts.update(write_quantity_manifests(out_dir=out_dir))
+    artifacts.update(write_quantity_micro_fortresses(out_dir=out_dir))
     ledger = (
         GlobalTransmutationLedger()
         if args.live_teacher and not args.reuse_ledger
@@ -959,6 +964,15 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
                 page_kind="dd_item_modal",
             )
         )
+        if args.compare_seeded_live:
+            seeded = seed_quantity_teacher_transmutation(source_model=args.teacher_model)
+            ledger.add_entry(
+                quantity_transmutation_to_ledger_entry(
+                    seeded,
+                    app_family="doordash",
+                    page_kind="dd_item_modal",
+                )
+            )
         ledger.write_json(ledger_path)
     elif args.seed_rule:
         transmutation = seed_quantity_teacher_transmutation(source_model=args.teacher_model)
@@ -975,6 +989,8 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
         student_base_url = args.student_base_url or UniversalLLMClient._default_base_url_from_env("ollama")
         student_client = UniversalLLMClient(provider="ollama", base_url=student_base_url)
         lanes = tuple(args.lane or [])
+        if args.live_teacher and args.compare_seeded_live and not lanes:
+            lanes = ("raw", "seeded_full_rule", "authentic_nvidia_full_rule", "authentic_nvidia_condition_action_policy")
         teacher_hash = str(teacher_extraction.get("raw_teacher_response_hash") or "")
         report = run_quantity_model_authentic_replay(
             ledger=ledger,
@@ -995,9 +1011,7 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
         report = run_quantity_replay_proof(ledger=ledger, student_model=args.student_model)
     if teacher_extraction:
         report["teacher_extraction"] = teacher_extraction
-    out_dir = Path(args.out_dir).resolve() if args.out_dir else _default_report_dir("agency_quantity_replay")
-    artifacts = write_quantity_replay_report(report=report, out_dir=out_dir)
-    artifacts.update(write_quantity_manifests(out_dir=out_dir))
+    artifacts.update(write_quantity_replay_report(report=report, out_dir=out_dir))
     if teacher_extraction:
         teacher_path = out_dir / "quantity_teacher_extraction.json"
         teacher_path.write_text(json.dumps(teacher_extraction, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -2728,6 +2742,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="When --live-teacher is set, reuse the existing ledger instead of starting with a clean experiment ledger.",
     )
     agency_quantity.add_argument(
+        "--compare-seeded-live",
+        action="store_true",
+        help="After a clean live-teacher extraction, add the seeded rule only for raw/seeded/NVIDIA comparison lanes.",
+    )
+    agency_quantity.add_argument(
         "--ledger",
         default=DEFAULT_AGENCY_LEDGER_PATH,
         help="Durable agency ledger path. Defaults to .memla/agency_transmutation_ledger.json.",
@@ -2753,6 +2772,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "condition_action_policy",
             "verifier_only",
             "boundary_policy_only",
+            "seeded_full_rule",
+            "authentic_nvidia_full_rule",
+            "authentic_nvidia_condition_action_policy",
         ],
         default=[],
         help="Ablation lane to run. Repeat for multiple. Defaults to all lanes.",

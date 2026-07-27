@@ -1,0 +1,665 @@
+{
+  "case_count": 11,
+  "comparison_id": "agency_quantity_visible_hidden_10seed_v0",
+  "hidden": {
+    "authenticity_audit": {
+      "bank_packet_only_intentional_difference": true,
+      "candidate_metadata_visible": false,
+      "candidate_rule_from_nvidia_response": false,
+      "expected_student_request_count": 547,
+      "external_teacher_requests_in_student_lanes": 0,
+      "hardcoded_policy_selected_student_actions": false,
+      "holdouts_frozen_before_teacher": true,
+      "legacy_replay_was_deterministic_policy": true,
+      "model_authentic_replay_enabled": true,
+      "provider_response_metadata_present": true,
+      "retrieved_rule_ids": [
+        "agency_numeric_quantity_visible_evidence_v1"
+      ],
+      "retrieved_rule_provenance_hash_mismatch_count": 0,
+      "state_machine_scored_resulting_state": true,
+      "student_action_executed_count": 521,
+      "student_lanes_attempted_requests": true,
+      "student_lanes_executed_actions": false,
+      "student_lanes_made_real_requests": true,
+      "student_lanes_parsed_responses": false,
+      "student_lanes_received_responses": true,
+      "student_request_attempt_count": 547,
+      "student_response_parsed_count": 521,
+      "student_response_received_count": 547,
+      "teacher_free_student_lanes": true
+    },
+    "candidate_metadata_visible": false,
+    "constraint_family_summary": [
+      {
+        "constraint_family": "boundary_stop_no_applicable_control",
+        "lane": "condition_action_policy",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "boundary_stop_no_applicable_control",
+        "lane": "full_rich_rule",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "boundary_stop_no_applicable_control",
+        "lane": "raw",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "boundary_stop_no_applicable_control",
+        "lane": "seeded_full_rule",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "item_alias_numeric_distractor",
+        "lane": "condition_action_policy",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "item_alias_numeric_distractor",
+        "lane": "full_rich_rule",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "item_alias_numeric_distractor",
+        "lane": "raw",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "item_alias_numeric_distractor",
+        "lane": "seeded_full_rule",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "multi_step_quantity_adjustment",
+        "lane": "condition_action_policy",
+        "success_rate": 0.7667,
+        "successes": 23,
+        "trials": 30
+      },
+      {
+        "constraint_family": "multi_step_quantity_adjustment",
+        "lane": "full_rich_rule",
+        "success_rate": 1.0,
+        "successes": 30,
+        "trials": 30
+      },
+      {
+        "constraint_family": "multi_step_quantity_adjustment",
+        "lane": "raw",
+        "success_rate": 0.7,
+        "successes": 21,
+        "trials": 30
+      },
+      {
+        "constraint_family": "multi_step_quantity_adjustment",
+        "lane": "seeded_full_rule",
+        "success_rate": 1.0,
+        "successes": 30,
+        "trials": 30
+      },
+      {
+        "constraint_family": "quantity_already_grounded",
+        "lane": "condition_action_policy",
+        "success_rate": 0.7,
+        "successes": 14,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_already_grounded",
+        "lane": "full_rich_rule",
+        "success_rate": 1.0,
+        "successes": 20,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_already_grounded",
+        "lane": "raw",
+        "success_rate": 0.8,
+        "successes": 16,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_already_grounded",
+        "lane": "seeded_full_rule",
+        "success_rate": 1.0,
+        "successes": 20,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_increment_repair",
+        "lane": "condition_action_policy",
+        "success_rate": 0.7,
+        "successes": 14,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_increment_repair",
+        "lane": "full_rich_rule",
+        "success_rate": 1.0,
+        "successes": 20,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_increment_repair",
+        "lane": "raw",
+        "success_rate": 0.8,
+        "successes": 16,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_increment_repair",
+        "lane": "seeded_full_rule",
+        "success_rate": 1.0,
+        "successes": 20,
+        "trials": 20
+      },
+      {
+        "constraint_family": "scoped_affordance_grounding",
+        "lane": "condition_action_policy",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "scoped_affordance_grounding",
+        "lane": "full_rich_rule",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "scoped_affordance_grounding",
+        "lane": "raw",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "scoped_affordance_grounding",
+        "lane": "seeded_full_rule",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "sibling_app_transfer",
+        "lane": "condition_action_policy",
+        "success_rate": 0.8,
+        "successes": 8,
+        "trials": 10
+      },
+      {
+        "constraint_family": "sibling_app_transfer",
+        "lane": "full_rich_rule",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "sibling_app_transfer",
+        "lane": "raw",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "sibling_app_transfer",
+        "lane": "seeded_full_rule",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      }
+    ],
+    "full_rule_success_count": 90,
+    "improvement_count": 17,
+    "lane_metrics": {
+      "condition_action_policy": {
+        "condition_action_policy_action_executed_count": 88,
+        "condition_action_policy_avg_latency_ms": 2282.81,
+        "condition_action_policy_boundary_violation_count": 0,
+        "condition_action_policy_parse_failure_count": 22,
+        "condition_action_policy_request_attempt_count": 110,
+        "condition_action_policy_response_parsed_count": 88,
+        "condition_action_policy_response_received_count": 110,
+        "condition_action_policy_success_count": 69,
+        "condition_action_policy_trial_count": 110,
+        "condition_action_policy_verifier_failure_count": 10,
+        "condition_action_policy_wrong_target_count": 9
+      },
+      "full_rich_rule": {
+        "full_rich_rule_action_executed_count": 110,
+        "full_rich_rule_avg_latency_ms": 1691.43,
+        "full_rich_rule_boundary_violation_count": 0,
+        "full_rich_rule_parse_failure_count": 0,
+        "full_rich_rule_request_attempt_count": 110,
+        "full_rich_rule_response_parsed_count": 110,
+        "full_rich_rule_response_received_count": 110,
+        "full_rich_rule_success_count": 90,
+        "full_rich_rule_trial_count": 110,
+        "full_rich_rule_verifier_failure_count": 10,
+        "full_rich_rule_wrong_target_count": 10
+      },
+      "raw": {
+        "raw_action_executed_count": 106,
+        "raw_avg_latency_ms": 1526.94,
+        "raw_boundary_violation_count": 0,
+        "raw_parse_failure_count": 4,
+        "raw_request_attempt_count": 110,
+        "raw_response_parsed_count": 106,
+        "raw_response_received_count": 110,
+        "raw_success_count": 73,
+        "raw_trial_count": 110,
+        "raw_verifier_failure_count": 23,
+        "raw_wrong_target_count": 10
+      },
+      "seeded_full_rule": {
+        "seeded_full_rule_action_executed_count": 110,
+        "seeded_full_rule_avg_latency_ms": 1721.01,
+        "seeded_full_rule_boundary_violation_count": 0,
+        "seeded_full_rule_parse_failure_count": 0,
+        "seeded_full_rule_request_attempt_count": 110,
+        "seeded_full_rule_response_parsed_count": 110,
+        "seeded_full_rule_response_received_count": 110,
+        "seeded_full_rule_success_count": 90,
+        "seeded_full_rule_trial_count": 110,
+        "seeded_full_rule_verifier_failure_count": 10,
+        "seeded_full_rule_wrong_target_count": 10
+      }
+    },
+    "paired_discordance": [
+      {
+        "bank_packet_only_difference": true,
+        "both_fail": 20,
+        "both_success": 73,
+        "discordant_count": 17,
+        "lane": "full_rich_rule",
+        "lane_only_success": 17,
+        "paired_count": 110,
+        "raw_only_success": 0,
+        "sign_test_p_value": 1.5e-05
+      },
+      {
+        "bank_packet_only_difference": true,
+        "both_fail": 25,
+        "both_success": 57,
+        "discordant_count": 28,
+        "lane": "condition_action_policy",
+        "lane_only_success": 12,
+        "paired_count": 110,
+        "raw_only_success": 16,
+        "sign_test_p_value": 0.571588
+      },
+      {
+        "bank_packet_only_difference": true,
+        "both_fail": 20,
+        "both_success": 73,
+        "discordant_count": 17,
+        "lane": "seeded_full_rule",
+        "lane_only_success": 17,
+        "paired_count": 110,
+        "raw_only_success": 0,
+        "sign_test_p_value": 1.5e-05
+      }
+    ],
+    "raw_success_count": 73
+  },
+  "interpretation": "Seeded quantity transmutation improves act-after-grounding in both visible and hidden candidate suites, but live NVIDIA extraction is blocked by unauthorized credentials; do not claim live-teacher C2A evidence yet.",
+  "lanes": [
+    "raw",
+    "full_rich_rule",
+    "condition_action_policy",
+    "seeded_full_rule"
+  ],
+  "live_nvidia": {
+    "attempted": true,
+    "candidate_rule_from_nvidia_response": false,
+    "status": "blocked_401_unauthorized",
+    "student_evaluation_run": false
+  },
+  "manifest_hashes": {
+    "holdout_cases_sha256": "6ea061bc2126131947a7f7ab696e909407e25986dcc4a2c1446a95c4ef8fca39",
+    "micro_fortresses_sha256": "19916317a909a0ac3c46611757b1cc60f94b9fb79c01bbee43b7709fbd354ba8",
+    "train_cases_sha256": "814ce121c1d4d1e1d16edb92b1cf5575706b1bd2ab170267c71bbfd60f86a986"
+  },
+  "max_steps": 4,
+  "student_model": "mistral:7b-instruct",
+  "trials_per_case": 10,
+  "visible": {
+    "authenticity_audit": {
+      "bank_packet_only_intentional_difference": true,
+      "candidate_metadata_visible": true,
+      "candidate_rule_from_nvidia_response": false,
+      "expected_student_request_count": 546,
+      "external_teacher_requests_in_student_lanes": 0,
+      "hardcoded_policy_selected_student_actions": false,
+      "holdouts_frozen_before_teacher": true,
+      "legacy_replay_was_deterministic_policy": true,
+      "model_authentic_replay_enabled": true,
+      "provider_response_metadata_present": true,
+      "retrieved_rule_ids": [
+        "agency_numeric_quantity_visible_evidence_v1"
+      ],
+      "retrieved_rule_provenance_hash_mismatch_count": 0,
+      "state_machine_scored_resulting_state": true,
+      "student_action_executed_count": 536,
+      "student_lanes_attempted_requests": true,
+      "student_lanes_executed_actions": false,
+      "student_lanes_made_real_requests": true,
+      "student_lanes_parsed_responses": false,
+      "student_lanes_received_responses": true,
+      "student_request_attempt_count": 546,
+      "student_response_parsed_count": 536,
+      "student_response_received_count": 546,
+      "teacher_free_student_lanes": true
+    },
+    "candidate_metadata_visible": true,
+    "constraint_family_summary": [
+      {
+        "constraint_family": "boundary_stop_no_applicable_control",
+        "lane": "condition_action_policy",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "boundary_stop_no_applicable_control",
+        "lane": "full_rich_rule",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "boundary_stop_no_applicable_control",
+        "lane": "raw",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "boundary_stop_no_applicable_control",
+        "lane": "seeded_full_rule",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "item_alias_numeric_distractor",
+        "lane": "condition_action_policy",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "item_alias_numeric_distractor",
+        "lane": "full_rich_rule",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "item_alias_numeric_distractor",
+        "lane": "raw",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "item_alias_numeric_distractor",
+        "lane": "seeded_full_rule",
+        "success_rate": 0.0,
+        "successes": 0,
+        "trials": 10
+      },
+      {
+        "constraint_family": "multi_step_quantity_adjustment",
+        "lane": "condition_action_policy",
+        "success_rate": 1.0,
+        "successes": 30,
+        "trials": 30
+      },
+      {
+        "constraint_family": "multi_step_quantity_adjustment",
+        "lane": "full_rich_rule",
+        "success_rate": 0.9,
+        "successes": 27,
+        "trials": 30
+      },
+      {
+        "constraint_family": "multi_step_quantity_adjustment",
+        "lane": "raw",
+        "success_rate": 0.3333,
+        "successes": 10,
+        "trials": 30
+      },
+      {
+        "constraint_family": "multi_step_quantity_adjustment",
+        "lane": "seeded_full_rule",
+        "success_rate": 0.9667,
+        "successes": 29,
+        "trials": 30
+      },
+      {
+        "constraint_family": "quantity_already_grounded",
+        "lane": "condition_action_policy",
+        "success_rate": 1.0,
+        "successes": 20,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_already_grounded",
+        "lane": "full_rich_rule",
+        "success_rate": 0.95,
+        "successes": 19,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_already_grounded",
+        "lane": "raw",
+        "success_rate": 1.0,
+        "successes": 20,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_already_grounded",
+        "lane": "seeded_full_rule",
+        "success_rate": 0.9,
+        "successes": 18,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_increment_repair",
+        "lane": "condition_action_policy",
+        "success_rate": 1.0,
+        "successes": 20,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_increment_repair",
+        "lane": "full_rich_rule",
+        "success_rate": 1.0,
+        "successes": 20,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_increment_repair",
+        "lane": "raw",
+        "success_rate": 0.75,
+        "successes": 15,
+        "trials": 20
+      },
+      {
+        "constraint_family": "quantity_increment_repair",
+        "lane": "seeded_full_rule",
+        "success_rate": 1.0,
+        "successes": 20,
+        "trials": 20
+      },
+      {
+        "constraint_family": "scoped_affordance_grounding",
+        "lane": "condition_action_policy",
+        "success_rate": 0.8,
+        "successes": 8,
+        "trials": 10
+      },
+      {
+        "constraint_family": "scoped_affordance_grounding",
+        "lane": "full_rich_rule",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "scoped_affordance_grounding",
+        "lane": "raw",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "scoped_affordance_grounding",
+        "lane": "seeded_full_rule",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "sibling_app_transfer",
+        "lane": "condition_action_policy",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "sibling_app_transfer",
+        "lane": "full_rich_rule",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      },
+      {
+        "constraint_family": "sibling_app_transfer",
+        "lane": "raw",
+        "success_rate": 0.7,
+        "successes": 7,
+        "trials": 10
+      },
+      {
+        "constraint_family": "sibling_app_transfer",
+        "lane": "seeded_full_rule",
+        "success_rate": 1.0,
+        "successes": 10,
+        "trials": 10
+      }
+    ],
+    "full_rule_success_count": 86,
+    "improvement_count": 24,
+    "lane_metrics": {
+      "condition_action_policy": {
+        "condition_action_policy_action_executed_count": 108,
+        "condition_action_policy_avg_latency_ms": 1829.27,
+        "condition_action_policy_boundary_violation_count": 0,
+        "condition_action_policy_parse_failure_count": 2,
+        "condition_action_policy_request_attempt_count": 110,
+        "condition_action_policy_response_parsed_count": 108,
+        "condition_action_policy_response_received_count": 110,
+        "condition_action_policy_success_count": 88,
+        "condition_action_policy_trial_count": 110,
+        "condition_action_policy_verifier_failure_count": 10,
+        "condition_action_policy_wrong_target_count": 10
+      },
+      "full_rich_rule": {
+        "full_rich_rule_action_executed_count": 105,
+        "full_rich_rule_avg_latency_ms": 1917.04,
+        "full_rich_rule_boundary_violation_count": 0,
+        "full_rich_rule_parse_failure_count": 5,
+        "full_rich_rule_request_attempt_count": 110,
+        "full_rich_rule_response_parsed_count": 105,
+        "full_rich_rule_response_received_count": 110,
+        "full_rich_rule_success_count": 86,
+        "full_rich_rule_trial_count": 110,
+        "full_rich_rule_verifier_failure_count": 9,
+        "full_rich_rule_wrong_target_count": 10
+      },
+      "raw": {
+        "raw_action_executed_count": 110,
+        "raw_avg_latency_ms": 1376.17,
+        "raw_boundary_violation_count": 0,
+        "raw_parse_failure_count": 0,
+        "raw_request_attempt_count": 110,
+        "raw_response_parsed_count": 110,
+        "raw_response_received_count": 110,
+        "raw_success_count": 62,
+        "raw_trial_count": 110,
+        "raw_verifier_failure_count": 38,
+        "raw_wrong_target_count": 10
+      },
+      "seeded_full_rule": {
+        "seeded_full_rule_action_executed_count": 107,
+        "seeded_full_rule_avg_latency_ms": 1921.2,
+        "seeded_full_rule_boundary_violation_count": 0,
+        "seeded_full_rule_parse_failure_count": 3,
+        "seeded_full_rule_request_attempt_count": 110,
+        "seeded_full_rule_response_parsed_count": 107,
+        "seeded_full_rule_response_received_count": 110,
+        "seeded_full_rule_success_count": 87,
+        "seeded_full_rule_trial_count": 110,
+        "seeded_full_rule_verifier_failure_count": 10,
+        "seeded_full_rule_wrong_target_count": 10
+      }
+    },
+    "paired_discordance": [
+      {
+        "bank_packet_only_difference": true,
+        "both_fail": 21,
+        "both_success": 59,
+        "discordant_count": 30,
+        "lane": "full_rich_rule",
+        "lane_only_success": 27,
+        "paired_count": 110,
+        "raw_only_success": 3,
+        "sign_test_p_value": 8e-06
+      },
+      {
+        "bank_packet_only_difference": true,
+        "both_fail": 20,
+        "both_success": 60,
+        "discordant_count": 30,
+        "lane": "condition_action_policy",
+        "lane_only_success": 28,
+        "paired_count": 110,
+        "raw_only_success": 2,
+        "sign_test_p_value": 1e-06
+      },
+      {
+        "bank_packet_only_difference": true,
+        "both_fail": 20,
+        "both_success": 59,
+        "discordant_count": 31,
+        "lane": "seeded_full_rule",
+        "lane_only_success": 28,
+        "paired_count": 110,
+        "raw_only_success": 3,
+        "sign_test_p_value": 5e-06
+      }
+    ],
+    "raw_success_count": 62
+  }
+}

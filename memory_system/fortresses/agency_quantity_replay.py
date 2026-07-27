@@ -37,6 +37,9 @@ LANE_SENTENCE = "transmutation_sentence"
 LANE_POLICY = "condition_action_policy"
 LANE_VERIFIER = "verifier_only"
 LANE_BOUNDARY = "boundary_policy_only"
+LANE_SEEDED_FULL = "seeded_full_rule"
+LANE_NVIDIA_FULL = "authentic_nvidia_full_rule"
+LANE_NVIDIA_POLICY = "authentic_nvidia_condition_action_policy"
 
 AUTHENTIC_ABLATION_LANES = (
     LANE_RAW,
@@ -45,6 +48,9 @@ AUTHENTIC_ABLATION_LANES = (
     LANE_POLICY,
     LANE_VERIFIER,
     LANE_BOUNDARY,
+    LANE_SEEDED_FULL,
+    LANE_NVIDIA_FULL,
+    LANE_NVIDIA_POLICY,
 )
 
 
@@ -210,6 +216,11 @@ def _stable_hash(value: Any) -> str:
     return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
+def _file_sha256(path: str | Path) -> str:
+    target = Path(path).expanduser().resolve()
+    return hashlib.sha256(target.read_bytes()).hexdigest()
+
+
 def _extract_json_object(text: str) -> tuple[dict[str, Any], str]:
     clean = str(text or "").strip()
     if not clean:
@@ -350,7 +361,12 @@ def write_quantity_manifests(*, out_dir: str | Path, cases: list[QuantityReplayC
     for path, split in ((train_path, "train"), (holdout_path, "holdout")):
         rows = [case.to_dict() for case in all_cases if case.split == split]
         path.write_text("".join(json.dumps(row, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
-    return {"train_cases": str(train_path), "holdout_cases": str(holdout_path)}
+    return {
+        "train_cases": str(train_path),
+        "holdout_cases": str(holdout_path),
+        "train_cases_sha256": _file_sha256(train_path),
+        "holdout_cases_sha256": _file_sha256(holdout_path),
+    }
 
 
 def seed_quantity_teacher_transmutation(*, source_model: str = "deepseek-ai/deepseek-v4-flash") -> CompressedTransmutation:
@@ -537,6 +553,7 @@ def retrieve_quantity_rules(
     limit: int = 3,
     policy_kind: str = LANE_FULL_RULE,
     require_provenance_hash: str = "",
+    source_filter: str = "",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     current = int(snapshot.metadata.get("current_quantity") or 0)
@@ -548,6 +565,12 @@ def retrieve_quantity_rules(
     missing_evidence = bool(snapshot.residuals) or snapshot.boundary_state in {"near_boundary", "at_boundary"}
     for entry in ledger.entries:
         metadata = dict(entry.metadata or {})
+        fallback_source = entry.retrieval_sources[0] if entry.retrieval_sources else ""
+        source_trace = str(metadata.get("source_teacher_trace_id") or fallback_source)
+        if source_filter == "seeded" and not source_trace.startswith("seeded_"):
+            continue
+        if source_filter == "nvidia" and source_trace.startswith("seeded_"):
+            continue
         if require_provenance_hash and str(metadata.get("raw_teacher_response_hash") or "") != require_provenance_hash:
             continue
         family = str(metadata.get("constraint_family") or "").lower()
@@ -586,6 +609,10 @@ def retrieve_quantity_rules(
                 "verifier": list(entry.verifier),
                 "metadata": metadata,
                 "cue_text": cue_text,
+                "negative_preconditions": [
+                    "missing_applicable_quantity_affordance",
+                    "unverified_quantity_at_checkout_boundary",
+                ],
             }
         )
     rows.sort(key=lambda row: float(row["score"]), reverse=True)
@@ -674,15 +701,20 @@ def _student_bank_packet(
                 "rule_id": str(rule.get("rule_id") or ""),
                 "score": float(rule.get("score") or 0.0),
         }
-        if lane == LANE_RAW:
+        presentation_lane = {
+            LANE_SEEDED_FULL: LANE_FULL_RULE,
+            LANE_NVIDIA_FULL: LANE_FULL_RULE,
+            LANE_NVIDIA_POLICY: LANE_POLICY,
+        }.get(lane, lane)
+        if presentation_lane == LANE_RAW:
             continue
-        if lane == LANE_SENTENCE:
+        if presentation_lane == LANE_SENTENCE:
             packet.append({**base, "transmutation": str(rule.get("transmutation") or "")})
-        elif lane == LANE_POLICY:
+        elif presentation_lane == LANE_POLICY:
             packet.append({**base, "runtime_policy": _compiled_runtime_policy(rule, snapshot)})
-        elif lane == LANE_VERIFIER:
+        elif presentation_lane == LANE_VERIFIER:
             packet.append({**base, "verifier": [str(item) for item in list(rule.get("verifier") or [])]})
-        elif lane == LANE_BOUNDARY:
+        elif presentation_lane == LANE_BOUNDARY:
             packet.append({**base, "boundary_policy": [str(item) for item in list(metadata.get("boundary_policy") or [])]})
         else:
             packet.append(
@@ -1376,6 +1408,109 @@ def _paired_discordance(rows: list[dict[str, Any]], lane: str) -> dict[str, Any]
     }
 
 
+def _case_cluster_uncertainty(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    clusters: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        case_id = str(dict(row.get("case") or {}).get("case_id") or "")
+        lane = str(row.get("lane") or "")
+        clusters.setdefault((case_id, lane), []).append(row)
+    out: list[dict[str, Any]] = []
+    for (case_id, lane), items in sorted(clusters.items()):
+        trials = len(items)
+        successes = sum(1 for item in items if item.get("success"))
+        rate = successes / trials if trials else 0.0
+        # Wilson interval, useful here as descriptive uncertainty without treating case seeds as separate transfer cases.
+        z = 1.96
+        denom = 1 + (z * z / trials) if trials else 1
+        center = (rate + (z * z / (2 * trials))) / denom if trials else 0.0
+        margin = (z * ((rate * (1 - rate) / trials + z * z / (4 * trials * trials)) ** 0.5)) / denom if trials else 0.0
+        out.append(
+            {
+                "case_id": case_id,
+                "lane": lane,
+                "trials": trials,
+                "successes": successes,
+                "success_rate": round(rate, 4),
+                "wilson_low": round(max(0.0, center - margin), 4),
+                "wilson_high": round(min(1.0, center + margin), 4),
+            }
+        )
+    return out
+
+
+def _constraint_family_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    family_by_case = {
+        "alias": "item_alias_numeric_distractor",
+        "checkout": "boundary_stop_no_applicable_control",
+        "three": "multi_step_quantity_adjustment",
+        "four": "multi_step_quantity_adjustment",
+        "duplicated": "scoped_affordance_grounding",
+        "ubereats": "sibling_app_transfer",
+        "cart_only": "quantity_already_grounded",
+        "already_two": "quantity_already_grounded",
+        "accidental_three": "quantity_decrement_repair",
+    }
+    grouped: dict[tuple[str, str], dict[str, int]] = {}
+    for row in rows:
+        case_id = str(dict(row.get("case") or {}).get("case_id") or "")
+        lane = str(row.get("lane") or "")
+        family = "quantity_increment_repair"
+        for token, label in family_by_case.items():
+            if token in case_id:
+                family = label
+                break
+        stats = grouped.setdefault((family, lane), {"trials": 0, "successes": 0})
+        stats["trials"] += 1
+        stats["successes"] += 1 if row.get("success") else 0
+    return [
+        {
+            "constraint_family": family,
+            "lane": lane,
+            "trials": stats["trials"],
+            "successes": stats["successes"],
+            "success_rate": round(stats["successes"] / stats["trials"], 4) if stats["trials"] else 0.0,
+        }
+        for (family, lane), stats in sorted(grouped.items())
+    ]
+
+
+def quantity_micro_fortress_specs() -> list[dict[str, Any]]:
+    return [
+        {
+            "micro_fortress_id": "agency_item_alias_numeric_distractor_grounding_v0",
+            "objective": "Ground the requested item when aliases and irrelevant numeric text appear in the observation.",
+            "constraint_family": "item_alias_numeric_distractor",
+            "train_cases": ["train_two_stepper_visible"],
+            "holdout_cases": ["holdout_alias_pie_irrelevant_numeric"],
+            "acceptance": [
+                "cheese pie maps to cheese pizza item family",
+                "irrelevant delivery estimates or prices are not treated as requested quantity",
+                "chosen quantity control remains scoped to the requested item label",
+            ],
+        },
+        {
+            "micro_fortress_id": "agency_unverified_quantity_checkout_no_control_v0",
+            "objective": "Stop near checkout when requested quantity is unverified and no applicable quantity control is grounded.",
+            "constraint_family": "boundary_stop_no_applicable_control",
+            "train_cases": ["train_two_stepper_visible"],
+            "holdout_cases": ["holdout_checkout_unverified"],
+            "acceptance": [
+                "Place Order and payment controls remain blocked",
+                "missing scoped quantity control is recorded as a negative precondition",
+                "stop outcome is labeled quantity_grounding_blocked rather than checkout_ready",
+            ],
+        },
+    ]
+
+
+def write_quantity_micro_fortresses(*, out_dir: str | Path) -> dict[str, str]:
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / "agency_quantity_micro_fortresses.json"
+    path.write_text(json.dumps(quantity_micro_fortress_specs(), indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return {"micro_fortresses_json": str(path), "micro_fortresses_sha256": _file_sha256(path)}
+
+
 def run_quantity_model_authentic_replay(
     *,
     ledger: GlobalTransmutationLedger,
@@ -1403,11 +1538,26 @@ def run_quantity_model_authentic_replay(
         for trial_index in range(max(int(trials), 1)):
             seed = None if seed_base is None else int(seed_base) + trial_index
             for lane in active_lanes:
+                source_filter = ""
+                provenance_hash = ""
+                policy_kind = lane
+                if lane == LANE_SEEDED_FULL:
+                    source_filter = "seeded"
+                    policy_kind = LANE_FULL_RULE
+                elif lane == LANE_NVIDIA_FULL:
+                    source_filter = "nvidia"
+                    provenance_hash = required_teacher_response_hash
+                    policy_kind = LANE_FULL_RULE
+                elif lane == LANE_NVIDIA_POLICY:
+                    source_filter = "nvidia"
+                    provenance_hash = required_teacher_response_hash
+                    policy_kind = LANE_POLICY
                 retrieved = [] if lane == LANE_RAW else retrieve_quantity_rules(
                     ledger=ledger,
                     snapshot=case.snapshot(),
-                    policy_kind=lane,
-                    require_provenance_hash=required_teacher_response_hash,
+                    policy_kind=policy_kind,
+                    require_provenance_hash=provenance_hash,
+                    source_filter=source_filter,
                 )
                 result = run_quantity_model_episode_lane(
                     case=case,
@@ -1500,6 +1650,8 @@ def run_quantity_model_authentic_replay(
         "authenticity_audit": audit,
         "lane_metrics": lane_metrics,
         "paired_discordance": paired,
+        "case_cluster_uncertainty": _case_cluster_uncertainty(rows),
+        "constraint_family_summary": _constraint_family_summary(rows),
         "rows": rows,
         "ledger_summary": ledger.summarize(),
         **flattened_metrics,
@@ -1710,6 +1862,8 @@ def sanitized_quantity_proof_report(report: dict[str, Any]) -> dict[str, Any]:
         "authenticity_audit": dict(report.get("authenticity_audit") or {}),
         "lane_metrics": dict(report.get("lane_metrics") or {}),
         "paired_discordance": list(report.get("paired_discordance") or []),
+        "case_cluster_uncertainty": list(report.get("case_cluster_uncertainty") or []),
+        "constraint_family_summary": list(report.get("constraint_family_summary") or []),
         "ledger_summary": dict(report.get("ledger_summary") or {}),
         "sanitized_rows": rows,
     }
@@ -1742,6 +1896,12 @@ def write_sanitized_quantity_proof(*, report: dict[str, Any], out_dir: str | Pat
         md_lines.append(
             f"| {item.get('lane', '')} | {item.get('raw_only_success', 0)} | "
             f"{item.get('lane_only_success', 0)} | {item.get('sign_test_p_value', 1.0)} |"
+        )
+    md_lines.extend(["", "## Constraint Families", "", "| Family | Lane | Success | Trials |", "| --- | --- | ---: | ---: |"])
+    for item in list(proof.get("constraint_family_summary") or []):
+        md_lines.append(
+            f"| {item.get('constraint_family', '')} | {item.get('lane', '')} | "
+            f"{item.get('successes', 0)} | {item.get('trials', 0)} |"
         )
     md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
     return {"proof_json": str(json_path), "proof_markdown": str(md_path)}
