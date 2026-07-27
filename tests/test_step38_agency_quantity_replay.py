@@ -7,7 +7,11 @@ import pytest
 from memory_system.cli import main
 from memory_system.fortresses.agency_quantity_replay import (
     DEFAULT_AGENCY_LEDGER_PATH,
+    LANE_NVIDIA_FAMILY_ONLY,
+    LANE_NVIDIA_SEMANTIC,
     QUANTITY_RULE_ID,
+    _semantic_compiled_runtime_policy,
+    _student_bank_packet,
     default_quantity_replay_cases,
     extract_live_quantity_teacher_rule,
     quantity_transmutation_to_ledger_entry,
@@ -18,6 +22,7 @@ from memory_system.fortresses.agency_quantity_replay import (
     run_quantity_student_lane,
     seed_quantity_teacher_transmutation,
     write_quantity_manifests,
+    write_sanitized_quantity_proof,
 )
 from memory_system.fortresses.meta_fortress import GlobalTransmutationLedger
 from memory_system.ollama_client import ChatResponse
@@ -107,6 +112,27 @@ def _quantity_ledger() -> GlobalTransmutationLedger:
     transmutation = seed_quantity_teacher_transmutation()
     entry = quantity_transmutation_to_ledger_entry(transmutation)
     return GlobalTransmutationLedger([entry])
+
+
+def _nvidia_quantity_ledger(*, transfer_targets: list[str] | None = None) -> tuple[GlobalTransmutationLedger, str, str]:
+    raw_hash = "live_hash_for_test"
+    base = seed_quantity_teacher_transmutation(source_model="deepseek-ai/deepseek-v4-flash")
+    data = base.to_dict()
+    data.update(
+        {
+            "rule_id": "atm_numeric_live_test",
+            "source_teacher_trace_id": "trace_live_deepseek_test",
+            "action_schema": "adjust quantity via stepper or plus/minus button until visible count equals 2, then verify in cart",
+            "transfer_targets": transfer_targets or ["same app", "current page-kind", "numeric cardinality preservation"],
+        }
+    )
+    metadata = dict(data.get("metadata") or {})
+    metadata["raw_teacher_response_hash"] = raw_hash
+    metadata["teacher_provider"] = "nvidia"
+    data["metadata"] = metadata
+    transmutation = base.__class__(**data).normalized()
+    entry = quantity_transmutation_to_ledger_entry(transmutation)
+    return GlobalTransmutationLedger([entry]), raw_hash, transmutation.rule_id
 
 
 def test_quantity_replay_freezes_train_and_holdout_manifests(tmp_path):
@@ -226,6 +252,86 @@ def test_live_teacher_extraction_preserves_response_hash_and_holdout_guard():
     assert extraction["compressed_transmutation"]["source_teacher_trace_id"] == "live_fake_deepseek_trace"
     assert extraction["holdout_leakage_guard"]["teacher_saw_splits"] == ["train"]
     assert extraction["holdout_leakage_guard"]["teacher_holdout_case_count"] == 0
+
+
+def test_semantic_compiler_does_not_invent_quantity_actions_without_teacher_fields():
+    case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_digit_2")
+    snapshot = case.snapshot()
+    placebo_rule = {
+        "rule_id": "placebo_numeric_rule_v0",
+        "transmutation": "numeric constraint exists",
+        "action_family": "numeric",
+        "preconditions": [],
+        "verifier": [],
+        "metadata": {"constraint_family": "numeric"},
+    }
+
+    policy = _semantic_compiled_runtime_policy(placebo_rule, snapshot)
+
+    assert policy["compiler_invented_actions"] is False
+    assert policy["when"] == "current_quantity < requested_quantity"
+    assert policy["choose"] == ""
+    assert policy["teacher_policy_clauses"]["teacher_actions_present"]["below"] is False
+
+
+def test_nvidia_semantic_and_family_only_packets_separate_teacher_knowledge():
+    ledger, raw_hash, rule_id = _nvidia_quantity_ledger()
+    case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_digit_2")
+    retrieved = retrieve_quantity_rules(
+        ledger=ledger,
+        snapshot=case.snapshot(),
+        policy_kind=LANE_NVIDIA_SEMANTIC,
+        require_provenance_hash=raw_hash,
+        source_filter="nvidia",
+    )
+
+    semantic_packet = _student_bank_packet(retrieved, lane=LANE_NVIDIA_SEMANTIC, snapshot=case.snapshot())
+    family_packet = _student_bank_packet(retrieved, lane=LANE_NVIDIA_FAMILY_ONLY, snapshot=case.snapshot())
+
+    assert retrieved[0]["rule_id"] == rule_id
+    assert semantic_packet[0]["runtime_policy"]["choose"]
+    assert semantic_packet[0]["runtime_policy"]["teacher_policy_clauses"]["action_when_below_target"]
+    assert "constraint_family" in family_packet[0]["runtime_policy"]
+    assert "choose" not in family_packet[0]["runtime_policy"]
+
+
+def test_nvidia_rule_is_quarantined_from_ubereats_without_explicit_transfer_scope():
+    ledger, raw_hash, _rule_id = _nvidia_quantity_ledger(transfer_targets=["same app", "current page-kind"])
+    ubereats_case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_ubereats_sibling_stepper")
+    report = run_quantity_model_authentic_replay(
+        ledger=ledger,
+        student_client=FakeStudentClient(),
+        student_model="mistral:7b-instruct",
+        cases=[default_quantity_replay_cases()[0], ubereats_case],
+        trials=1,
+        seed_base=900,
+        lanes=("raw", LANE_NVIDIA_SEMANTIC),
+        required_teacher_response_hash=raw_hash,
+        candidate_rule_from_nvidia_response=True,
+    )
+
+    assert report["authenticity_audit"]["retrieved_rule_provenance_hash_mismatch_count"] == 0
+    assert report["authenticity_audit"]["nvidia_rule_quarantined_from_ubereats"] is True
+    assert report["authenticity_audit"]["nvidia_ubereats_retrieval_count"] == 0
+
+
+def test_sanitized_proof_includes_compressed_teacher_rule_fields(tmp_path):
+    extraction = extract_live_quantity_teacher_rule(teacher_client=FakeTeacherClient())
+    report = {
+        "replay_id": "proof_test",
+        "student_model": "mistral:7b-instruct",
+        "trial_count_per_holdout": 1,
+        "lanes": ["raw"],
+        "teacher_extraction": extraction,
+        "rows": [],
+    }
+
+    artifacts = write_sanitized_quantity_proof(report=report, out_dir=tmp_path)
+    proof = json.loads((tmp_path / "agency_quantity_authentic_replay.json").read_text(encoding="utf-8"))
+
+    assert artifacts["proof_json"].endswith("agency_quantity_authentic_replay.json")
+    assert proof["teacher_compressed_rule_fields"]["action_schema"] == "adjust_quantity_then_reinspect"
+    assert proof["teacher_compressed_rule_fields"]["teacher_policy_clauses"]["teacher_actions_present"]["below"] is True
 
 
 def test_agency_quantity_replay_cli_writes_ledger_and_reports(tmp_path, monkeypatch, capsys):

@@ -40,6 +40,10 @@ LANE_BOUNDARY = "boundary_policy_only"
 LANE_SEEDED_FULL = "seeded_full_rule"
 LANE_NVIDIA_FULL = "authentic_nvidia_full_rule"
 LANE_NVIDIA_POLICY = "authentic_nvidia_condition_action_policy"
+LANE_COMPILER_ONLY = "compiler_only_no_teacher"
+LANE_PLACEBO_COMPILED = "placebo_numeric_rule_compiled"
+LANE_NVIDIA_FAMILY_ONLY = "nvidia_constraint_family_only"
+LANE_NVIDIA_SEMANTIC = "nvidia_semantic_compiled"
 
 AUTHENTIC_ABLATION_LANES = (
     LANE_RAW,
@@ -51,6 +55,10 @@ AUTHENTIC_ABLATION_LANES = (
     LANE_SEEDED_FULL,
     LANE_NVIDIA_FULL,
     LANE_NVIDIA_POLICY,
+    LANE_COMPILER_ONLY,
+    LANE_PLACEBO_COMPILED,
+    LANE_NVIDIA_FAMILY_ONLY,
+    LANE_NVIDIA_SEMANTIC,
 )
 
 
@@ -563,6 +571,7 @@ def retrieve_quantity_rules(
         for candidate in snapshot.candidates
     )
     missing_evidence = bool(snapshot.residuals) or snapshot.boundary_state in {"near_boundary", "at_boundary"}
+    nvidia_policy_kinds = {LANE_FULL_RULE, LANE_SENTENCE, LANE_POLICY, LANE_NVIDIA_SEMANTIC, LANE_NVIDIA_FAMILY_ONLY}
     for entry in ledger.entries:
         metadata = dict(entry.metadata or {})
         fallback_source = entry.retrieval_sources[0] if entry.retrieval_sources else ""
@@ -585,7 +594,7 @@ def retrieve_quantity_rules(
             continue
         if snapshot.app_family == "ubereats" and snapshot.app_family not in transfer_targets and entry.repo_family != snapshot.app_family:
             continue
-        if policy_kind in {LANE_FULL_RULE, LANE_SENTENCE, LANE_POLICY}:
+        if policy_kind in nvidia_policy_kinds:
             if current == requested:
                 continue
             if not (has_quantity_control or missing_evidence):
@@ -660,7 +669,7 @@ def _candidate_rows(snapshot: AgencyStateSnapshot, *, expose_metadata: bool = Tr
     return rows
 
 
-def _compiled_runtime_policy(rule: dict[str, Any], snapshot: AgencyStateSnapshot) -> dict[str, Any]:
+def _control_compiled_runtime_policy(rule: dict[str, Any], snapshot: AgencyStateSnapshot) -> dict[str, Any]:
     current = int(snapshot.metadata.get("current_quantity") or 0)
     requested = int(snapshot.metadata.get("requested_quantity") or 0)
     item = str(snapshot.capsule_slots.get("item") or "").strip()
@@ -688,6 +697,80 @@ def _compiled_runtime_policy(rule: dict[str, Any], snapshot: AgencyStateSnapshot
     }
 
 
+def _teacher_policy_clauses(rule: dict[str, Any]) -> dict[str, Any]:
+    text_fields = " | ".join(
+        str(part)
+        for part in [
+            rule.get("transmutation", ""),
+            rule.get("action_family", ""),
+            " ".join(list(rule.get("preconditions") or [])),
+            " ".join(list(rule.get("verifier") or [])),
+            " ".join(list(dict(rule.get("metadata") or {}).get("repair_policy") or [])),
+            " ".join(list(dict(rule.get("metadata") or {}).get("boundary_policy") or [])),
+        ]
+    ).lower()
+    has_increment = any(token in text_fields for token in ("increment", "plus", "increase", "stepper"))
+    has_decrement = any(token in text_fields for token in ("decrement", "minus", "decrease", "stepper"))
+    has_compare = any(token in text_fields for token in ("equals", "equal", "compare", "visible count", "visible quantity"))
+    has_stop = any(token in text_fields for token in ("stop", "payment", "final confirmation", "checkout"))
+    return {
+        "applicability_conditions": [str(item) for item in list(rule.get("preconditions") or [])],
+        "comparison_operation": "compare_visible_count_to_requested_quantity" if has_compare else "",
+        "action_when_below_target": "choose increment/plus/stepper control scoped to requested item" if has_increment else "",
+        "action_when_above_target": "choose decrement/minus/stepper control scoped to requested item" if has_decrement else "",
+        "action_when_equal": "verify visible count; do not adjust" if has_compare else "",
+        "target_scoping_rule": "requested item scope required" if "item" in text_fields else "",
+        "expected_postcondition": "; ".join(str(item) for item in list(rule.get("verifier") or [])),
+        "verifier": [str(item) for item in list(rule.get("verifier") or [])],
+        "repair": [str(item) for item in list(dict(rule.get("metadata") or {}).get("repair_policy") or [])],
+        "negative_preconditions": [str(item) for item in list(rule.get("negative_preconditions") or [])],
+        "transfer_scope": [str(item) for item in list(dict(rule.get("metadata") or {}).get("transfer_targets") or [])],
+        "boundary_stop": "stop before payment/final confirmation" if has_stop else "",
+        "teacher_actions_present": {
+            "below": has_increment,
+            "above": has_decrement,
+            "equal": has_compare,
+            "boundary_stop": has_stop,
+        },
+    }
+
+
+def _semantic_compiled_runtime_policy(rule: dict[str, Any], snapshot: AgencyStateSnapshot) -> dict[str, Any]:
+    current = int(snapshot.metadata.get("current_quantity") or 0)
+    requested = int(snapshot.metadata.get("requested_quantity") or 0)
+    clauses = _teacher_policy_clauses(rule)
+    if current < requested:
+        when = "current_quantity < requested_quantity"
+        choose = clauses["action_when_below_target"]
+    elif current > requested:
+        when = "current_quantity > requested_quantity"
+        choose = clauses["action_when_above_target"]
+    else:
+        when = "current_quantity == requested_quantity"
+        choose = clauses["action_when_equal"]
+    return {
+        "rule_id": str(rule.get("rule_id") or ""),
+        "policy_kind": "teacher_semantic_quantity_policy",
+        "when": when,
+        "choose": choose,
+        "requested_item": str(snapshot.capsule_slots.get("item") or "").strip(),
+        "verify": clauses["expected_postcondition"],
+        "otherwise": "stop if no teacher-provided action clause applies",
+        "forbidden": [item for item in [clauses["boundary_stop"]] if item],
+        "teacher_policy_clauses": clauses,
+        "compiler_invented_actions": False,
+    }
+
+
+def _label_only_policy(rule: dict[str, Any], *, label: str) -> dict[str, Any]:
+    return {
+        "rule_id": str(rule.get("rule_id") or ""),
+        "policy_kind": label,
+        "constraint_family": str(rule.get("metadata", {}).get("constraint_family") or "numeric"),
+        "compiler_invented_actions": False,
+    }
+
+
 def _student_bank_packet(
     retrieved_rules: list[dict[str, Any]],
     *,
@@ -705,13 +788,21 @@ def _student_bank_packet(
             LANE_SEEDED_FULL: LANE_FULL_RULE,
             LANE_NVIDIA_FULL: LANE_FULL_RULE,
             LANE_NVIDIA_POLICY: LANE_POLICY,
+            LANE_NVIDIA_SEMANTIC: LANE_NVIDIA_SEMANTIC,
+            LANE_COMPILER_ONLY: LANE_POLICY,
+            LANE_PLACEBO_COMPILED: LANE_POLICY,
+            LANE_NVIDIA_FAMILY_ONLY: LANE_NVIDIA_FAMILY_ONLY,
         }.get(lane, lane)
         if presentation_lane == LANE_RAW:
             continue
         if presentation_lane == LANE_SENTENCE:
             packet.append({**base, "transmutation": str(rule.get("transmutation") or "")})
         elif presentation_lane == LANE_POLICY:
-            packet.append({**base, "runtime_policy": _compiled_runtime_policy(rule, snapshot)})
+            packet.append({**base, "runtime_policy": _control_compiled_runtime_policy(rule, snapshot)})
+        elif presentation_lane == LANE_NVIDIA_SEMANTIC:
+            packet.append({**base, "runtime_policy": _semantic_compiled_runtime_policy(rule, snapshot)})
+        elif presentation_lane == LANE_NVIDIA_FAMILY_ONLY:
+            packet.append({**base, "runtime_policy": _label_only_policy(rule, label="nvidia_constraint_family_only")})
         elif presentation_lane == LANE_VERIFIER:
             packet.append({**base, "verifier": [str(item) for item in list(rule.get("verifier") or [])]})
         elif presentation_lane == LANE_BOUNDARY:
@@ -729,6 +820,120 @@ def _student_bank_packet(
                 }
             )
     return packet
+
+
+def _semantic_policy_clause_artifact(rule: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "rule_id": str(rule.get("rule_id") or ""),
+        "source_teacher_trace_id": str(dict(rule.get("metadata") or {}).get("source_teacher_trace_id") or ""),
+        "raw_teacher_response_hash": str(dict(rule.get("metadata") or {}).get("raw_teacher_response_hash") or ""),
+        "teacher_policy_clauses": _teacher_policy_clauses(rule),
+    }
+
+
+def _compressed_teacher_rule_fields(compressed: dict[str, Any]) -> dict[str, Any]:
+    if not compressed:
+        return {}
+    metadata = dict(compressed.get("metadata") or {})
+    rule_like = {
+        "rule_id": compressed.get("rule_id", ""),
+        "transmutation": compressed.get("transmutation", ""),
+        "action_family": compressed.get("action_schema", ""),
+        "preconditions": list(compressed.get("observation_cues") or []),
+        "verifier": list(compressed.get("verifier") or []),
+        "negative_preconditions": list(compressed.get("negative_preconditions") or []),
+        "metadata": {
+            "constraint_family": compressed.get("constraint_family", ""),
+            "repair_policy": list(compressed.get("repair_policy") or []),
+            "boundary_policy": list(compressed.get("boundary_policy") or []),
+            "transfer_targets": list(compressed.get("transfer_targets") or []),
+            "source_teacher_trace_id": compressed.get("source_teacher_trace_id", ""),
+            "raw_teacher_response_hash": metadata.get("raw_teacher_response_hash", ""),
+        },
+    }
+    return {
+        "rule_id": compressed.get("rule_id", ""),
+        "source_teacher_trace_id": compressed.get("source_teacher_trace_id", ""),
+        "source_model": compressed.get("source_model", ""),
+        "constraint_family": compressed.get("constraint_family", ""),
+        "transmutation": compressed.get("transmutation", ""),
+        "action_schema": compressed.get("action_schema", ""),
+        "constraints_before": list(compressed.get("constraints_before") or []),
+        "constraints_after": list(compressed.get("constraints_after") or []),
+        "observation_cues": list(compressed.get("observation_cues") or []),
+        "verifier": list(compressed.get("verifier") or []),
+        "repair_policy": list(compressed.get("repair_policy") or []),
+        "boundary_policy": list(compressed.get("boundary_policy") or []),
+        "negative_preconditions": list(compressed.get("negative_preconditions") or []),
+        "transfer_targets": list(compressed.get("transfer_targets") or []),
+        "acceptance_tests": list(compressed.get("acceptance_tests") or []),
+        "confidence": compressed.get("confidence", 0.0),
+        "raw_teacher_response_hash": metadata.get("raw_teacher_response_hash", ""),
+        "teacher_policy_clauses": _teacher_policy_clauses(rule_like),
+    }
+
+
+def _synthetic_compiler_rule(rule_id: str, *, placebo: bool = False) -> dict[str, Any]:
+    return {
+        "rule_id": rule_id,
+        "score": 0.0,
+        "transmutation": "" if placebo else "compiler control: no teacher rule supplied",
+        "action_family": "numeric" if placebo else "compiler_only",
+        "preconditions": [],
+        "verifier": [],
+        "negative_preconditions": [],
+        "metadata": {
+            "constraint_family": "numeric",
+            "repair_policy": [],
+            "boundary_policy": [],
+            "transfer_targets": [],
+            "source_teacher_trace_id": "control_no_teacher",
+        },
+    }
+
+
+def _rules_for_quantity_lane(
+    *,
+    ledger: GlobalTransmutationLedger,
+    snapshot: AgencyStateSnapshot,
+    lane: str,
+    required_teacher_response_hash: str = "",
+) -> list[dict[str, Any]]:
+    if lane == LANE_RAW:
+        return []
+    if lane == LANE_COMPILER_ONLY:
+        return [_synthetic_compiler_rule("compiler_only_numeric_control_v0")]
+    if lane == LANE_PLACEBO_COMPILED:
+        return [_synthetic_compiler_rule("placebo_numeric_rule_v0", placebo=True)]
+    source_filter = ""
+    provenance_hash = ""
+    policy_kind = lane
+    if lane == LANE_SEEDED_FULL:
+        source_filter = "seeded"
+        policy_kind = LANE_FULL_RULE
+    elif lane == LANE_NVIDIA_FULL:
+        source_filter = "nvidia"
+        provenance_hash = required_teacher_response_hash
+        policy_kind = LANE_FULL_RULE
+    elif lane == LANE_NVIDIA_POLICY:
+        source_filter = "nvidia"
+        provenance_hash = required_teacher_response_hash
+        policy_kind = LANE_POLICY
+    elif lane == LANE_NVIDIA_SEMANTIC:
+        source_filter = "nvidia"
+        provenance_hash = required_teacher_response_hash
+        policy_kind = LANE_NVIDIA_SEMANTIC
+    elif lane == LANE_NVIDIA_FAMILY_ONLY:
+        source_filter = "nvidia"
+        provenance_hash = required_teacher_response_hash
+        policy_kind = LANE_NVIDIA_FAMILY_ONLY
+    return retrieve_quantity_rules(
+        ledger=ledger,
+        snapshot=snapshot,
+        policy_kind=policy_kind,
+        require_provenance_hash=provenance_hash,
+        source_filter=source_filter,
+    )
 
 
 def build_quantity_student_messages(
@@ -1439,7 +1644,7 @@ def _case_cluster_uncertainty(rows: list[dict[str, Any]]) -> list[dict[str, Any]
 
 
 def _primary_bank_lane(active_lanes: tuple[str, ...]) -> str:
-    for lane in (LANE_NVIDIA_POLICY, LANE_NVIDIA_FULL, LANE_SEEDED_FULL, LANE_FULL_RULE):
+    for lane in (LANE_NVIDIA_SEMANTIC, LANE_NVIDIA_POLICY, LANE_NVIDIA_FULL, LANE_SEEDED_FULL, LANE_FULL_RULE):
         if lane in active_lanes:
             return lane
     for lane in active_lanes:
@@ -1548,26 +1753,11 @@ def run_quantity_model_authentic_replay(
         for trial_index in range(max(int(trials), 1)):
             seed = None if seed_base is None else int(seed_base) + trial_index
             for lane in active_lanes:
-                source_filter = ""
-                provenance_hash = ""
-                policy_kind = lane
-                if lane == LANE_SEEDED_FULL:
-                    source_filter = "seeded"
-                    policy_kind = LANE_FULL_RULE
-                elif lane == LANE_NVIDIA_FULL:
-                    source_filter = "nvidia"
-                    provenance_hash = required_teacher_response_hash
-                    policy_kind = LANE_FULL_RULE
-                elif lane == LANE_NVIDIA_POLICY:
-                    source_filter = "nvidia"
-                    provenance_hash = required_teacher_response_hash
-                    policy_kind = LANE_POLICY
-                retrieved = [] if lane == LANE_RAW else retrieve_quantity_rules(
+                retrieved = _rules_for_quantity_lane(
                     ledger=ledger,
                     snapshot=case.snapshot(),
-                    policy_kind=policy_kind,
-                    require_provenance_hash=provenance_hash,
-                    source_filter=source_filter,
+                    lane=lane,
+                    required_teacher_response_hash=required_teacher_response_hash,
                 )
                 result = run_quantity_model_episode_lane(
                     case=case,
@@ -1611,10 +1801,25 @@ def run_quantity_model_authentic_replay(
         lane = str(row.get("lane") or "")
         for rule in list(row.get("retrieved_rules") or []):
             retrieved_rule_ids.append(str(rule.get("rule_id") or ""))
-            if required_teacher_response_hash and lane in {LANE_NVIDIA_FULL, LANE_NVIDIA_POLICY}:
+            if required_teacher_response_hash and lane in {LANE_NVIDIA_FULL, LANE_NVIDIA_POLICY, LANE_NVIDIA_SEMANTIC, LANE_NVIDIA_FAMILY_ONLY}:
                 metadata = dict(rule.get("metadata") or {})
                 if str(metadata.get("raw_teacher_response_hash") or "") != required_teacher_response_hash:
                     retrieved_hash_mismatches += 1
+    nvidia_ubereats_retrievals = [
+        row
+        for row in rows
+        if str(row.get("lane") or "") in {LANE_NVIDIA_FULL, LANE_NVIDIA_POLICY, LANE_NVIDIA_SEMANTIC, LANE_NVIDIA_FAMILY_ONLY}
+        and "ubereats" in str(dict(row.get("case") or {}).get("case_id") or "")
+        and list(row.get("retrieved_rules") or [])
+    ]
+    semantic_artifacts: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        if str(row.get("lane") or "") != LANE_NVIDIA_SEMANTIC:
+            continue
+        for rule in list(row.get("retrieved_rules") or []):
+            rule_id = str(rule.get("rule_id") or "")
+            if rule_id and rule_id not in semantic_artifacts:
+                semantic_artifacts[rule_id] = _semantic_policy_clause_artifact(rule)
     audit = {
         "legacy_replay_was_deterministic_policy": True,
         "model_authentic_replay_enabled": True,
@@ -1639,6 +1844,15 @@ def run_quantity_model_authentic_replay(
         "candidate_metadata_visible": bool(expose_candidate_metadata),
         "retrieved_rule_ids": sorted(set(retrieved_rule_ids)),
         "retrieved_rule_provenance_hash_mismatch_count": retrieved_hash_mismatches,
+        "compiler_only_no_teacher_uses_control_compiler": LANE_COMPILER_ONLY in active_lanes,
+        "placebo_numeric_rule_uses_control_compiler": LANE_PLACEBO_COMPILED in active_lanes,
+        "nvidia_semantic_compiler_invents_quantity_actions": False,
+        "nvidia_semantic_compiler_clause_rule_ids": sorted(semantic_artifacts),
+        "nvidia_rule_quarantined_from_ubereats": not nvidia_ubereats_retrievals,
+        "nvidia_ubereats_retrieval_count": len(nvidia_ubereats_retrievals),
+        "nvidia_quarantine_reason": (
+            "prior measured negative transfer and live rule transfer scope omits ubereats; retrieval requires explicit transfer target"
+        ),
     }
     raw_success = int(raw_metrics["raw_success_count"])
     bank_success = int(bank_metrics[f"{primary_bank_lane}_success_count"])
@@ -1670,6 +1884,7 @@ def run_quantity_model_authentic_replay(
         "paired_discordance": paired,
         "case_cluster_uncertainty": _case_cluster_uncertainty(rows),
         "constraint_family_summary": _constraint_family_summary(rows),
+        "semantic_policy_clause_artifacts": semantic_artifacts,
         "rows": rows,
         "ledger_summary": ledger.summarize(),
         **flattened_metrics,
@@ -1879,6 +2094,7 @@ def sanitized_quantity_proof_report(report: dict[str, Any]) -> dict[str, Any]:
         "teacher_rule_id": compressed.get("rule_id", ""),
         "teacher_trace_id": compressed.get("source_teacher_trace_id", ""),
     }
+    teacher_rule_fields = _compressed_teacher_rule_fields(compressed)
     return {
         "replay_id": report.get("replay_id", ""),
         "generated_ts": report.get("generated_ts", 0),
@@ -1893,6 +2109,8 @@ def sanitized_quantity_proof_report(report: dict[str, Any]) -> dict[str, Any]:
         "teacher_calls": report.get("teacher_calls", 0),
         "teacher_calls_in_student_lanes": report.get("teacher_calls_in_student_lanes", 0),
         "teacher_summary": teacher_summary,
+        "teacher_compressed_rule_fields": teacher_rule_fields,
+        "semantic_policy_clause_artifacts": dict(report.get("semantic_policy_clause_artifacts") or {}),
         "authenticity_audit": dict(report.get("authenticity_audit") or {}),
         "lane_metrics": dict(report.get("lane_metrics") or {}),
         "paired_discordance": list(report.get("paired_discordance") or []),
@@ -1945,6 +2163,21 @@ def write_sanitized_quantity_proof(*, report: dict[str, Any], out_dir: str | Pat
                 f"- Teacher trace: `{teacher.get('teacher_trace_id', '')}`",
                 f"- Raw response hash: `{teacher.get('raw_teacher_response_hash', '')}`",
                 f"- Compressed rule hash: `{teacher.get('compressed_transmutation_hash', '')}`",
+            ]
+        )
+    rule_fields = dict(proof.get("teacher_compressed_rule_fields") or {})
+    if rule_fields:
+        md_lines.extend(
+            [
+                "",
+                "## Compressed Teacher Rule Fields",
+                "",
+                f"- Constraint family: `{rule_fields.get('constraint_family', '')}`",
+                f"- Transmutation: `{rule_fields.get('transmutation', '')}`",
+                f"- Action schema: `{rule_fields.get('action_schema', '')}`",
+                f"- Transfer targets: `{rule_fields.get('transfer_targets', [])}`",
+                f"- Boundary policy: `{rule_fields.get('boundary_policy', [])}`",
+                f"- Teacher clauses: `{rule_fields.get('teacher_policy_clauses', {})}`",
             ]
         )
     md_lines.extend(["", "## Constraint Families", "", "| Family | Lane | Success | Trials |", "| --- | --- | ---: | ---: |"])

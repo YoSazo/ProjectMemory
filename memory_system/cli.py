@@ -1054,7 +1054,15 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
         student_client = UniversalLLMClient(provider="ollama", base_url=student_base_url)
         lanes = tuple(args.lane or [])
         if args.live_teacher and args.compare_seeded_live and not lanes:
-            lanes = ("raw", "seeded_full_rule", "authentic_nvidia_full_rule", "authentic_nvidia_condition_action_policy")
+            lanes = (
+                "raw",
+                "compiler_only_no_teacher",
+                "placebo_numeric_rule_compiled",
+                "nvidia_constraint_family_only",
+                "nvidia_semantic_compiled",
+                "authentic_nvidia_full_rule",
+                "seeded_full_rule",
+            )
         teacher_hash = str(teacher_extraction.get("raw_teacher_response_hash") or "")
         report = run_quantity_model_authentic_replay(
             ledger=ledger,
@@ -2851,6 +2859,10 @@ def _build_parser() -> argparse.ArgumentParser:
             "seeded_full_rule",
             "authentic_nvidia_full_rule",
             "authentic_nvidia_condition_action_policy",
+            "compiler_only_no_teacher",
+            "placebo_numeric_rule_compiled",
+            "nvidia_constraint_family_only",
+            "nvidia_semantic_compiled",
         ],
         default=[],
         help="Ablation lane to run. Repeat for multiple. Defaults to all lanes.",
