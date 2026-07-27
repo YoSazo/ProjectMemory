@@ -1438,6 +1438,16 @@ def _case_cluster_uncertainty(rows: list[dict[str, Any]]) -> list[dict[str, Any]
     return out
 
 
+def _primary_bank_lane(active_lanes: tuple[str, ...]) -> str:
+    for lane in (LANE_NVIDIA_POLICY, LANE_NVIDIA_FULL, LANE_SEEDED_FULL, LANE_FULL_RULE):
+        if lane in active_lanes:
+            return lane
+    for lane in active_lanes:
+        if lane != LANE_RAW:
+            return lane
+    return LANE_RAW
+
+
 def _constraint_family_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     family_by_case = {
         "alias": "item_alias_numeric_distractor",
@@ -1575,7 +1585,8 @@ def run_quantity_model_authentic_replay(
                 rows.append({"lane": lane, "case": case.to_dict(), "retrieved_rules": retrieved, **result})
     lane_metrics = {lane: _lane_metrics(rows, lane) for lane in active_lanes}
     raw_metrics = lane_metrics.get(LANE_RAW, _lane_metrics(rows, LANE_RAW))
-    bank_metrics = lane_metrics.get(LANE_FULL_RULE, _lane_metrics(rows, LANE_FULL_RULE))
+    primary_bank_lane = _primary_bank_lane(active_lanes)
+    bank_metrics = lane_metrics.get(primary_bank_lane, _lane_metrics(rows, primary_bank_lane))
     paired = [_paired_discordance(rows, lane) for lane in active_lanes if lane != LANE_RAW]
     def _episode_count(row: dict[str, Any], field: str) -> int:
         steps = list(row.get("episode_steps") or [])
@@ -1597,9 +1608,10 @@ def run_quantity_model_authentic_replay(
     retrieved_rule_ids: list[str] = []
     retrieved_hash_mismatches = 0
     for row in rows:
+        lane = str(row.get("lane") or "")
         for rule in list(row.get("retrieved_rules") or []):
             retrieved_rule_ids.append(str(rule.get("rule_id") or ""))
-            if required_teacher_response_hash:
+            if required_teacher_response_hash and lane in {LANE_NVIDIA_FULL, LANE_NVIDIA_POLICY}:
                 metadata = dict(rule.get("metadata") or {})
                 if str(metadata.get("raw_teacher_response_hash") or "") != required_teacher_response_hash:
                     retrieved_hash_mismatches += 1
@@ -1629,7 +1641,11 @@ def run_quantity_model_authentic_replay(
         "retrieved_rule_provenance_hash_mismatch_count": retrieved_hash_mismatches,
     }
     raw_success = int(raw_metrics["raw_success_count"])
-    bank_success = int(bank_metrics[f"{LANE_FULL_RULE}_success_count"])
+    bank_success = int(bank_metrics[f"{primary_bank_lane}_success_count"])
+    lane_success_counts = {
+        lane: int(metrics.get(f"{lane}_success_count", 0))
+        for lane, metrics in lane_metrics.items()
+    }
     flattened_metrics: dict[str, Any] = {}
     for metrics in lane_metrics.values():
         flattened_metrics.update(metrics)
@@ -1640,11 +1656,13 @@ def run_quantity_model_authentic_replay(
         "trial_count_per_holdout": max(int(trials), 1),
         "max_steps": max(int(max_steps), 1),
         "lanes": list(active_lanes),
+        "primary_bank_lane": primary_bank_lane,
         "holdout_case_count": len(holdouts),
         "case_count": len(holdouts),
         "raw_success_count": raw_success,
         "bank_success_count": bank_success,
         "improvement_count": bank_success - raw_success,
+        "lane_success_counts": lane_success_counts,
         "teacher_calls": int(teacher_call_count),
         "teacher_calls_in_student_lanes": 0,
         "authenticity_audit": audit,
@@ -1659,7 +1677,7 @@ def run_quantity_model_authentic_replay(
 
 
 def render_quantity_replay_markdown(report: dict[str, Any]) -> str:
-    full_prefix = LANE_FULL_RULE
+    primary_lane = str(report.get("primary_bank_lane") or LANE_FULL_RULE)
     lines = [
         "# Agency Quantity Replay",
         "",
@@ -1668,7 +1686,8 @@ def render_quantity_replay_markdown(report: dict[str, Any]) -> str:
         f"- Holdout cases: {report.get('holdout_case_count', report.get('case_count', 0))}",
         f"- Trials per holdout: {report.get('trial_count_per_holdout', 1)}",
         f"- Raw successes: {report.get('raw_success_count', 0)}",
-        f"- Full-rule bank successes: {report.get('bank_success_count', 0)}",
+        f"- Primary bank lane: `{primary_lane}`",
+        f"- Primary bank successes: {report.get('bank_success_count', 0)}",
         f"- Improvement: {report.get('improvement_count', 0)}",
         f"- Teacher calls: {report.get('teacher_calls', 0)}",
         f"- Teacher calls in student lanes: {report.get('teacher_calls_in_student_lanes', 0)}",
@@ -1689,15 +1708,15 @@ def render_quantity_replay_markdown(report: dict[str, Any]) -> str:
             "## Failure Metrics",
             "",
             f"- Raw parse failures: {report.get('raw_parse_failure_count', 0)}",
-            f"- Full-rule parse failures: {report.get(f'{full_prefix}_parse_failure_count', 0)}",
+            f"- Primary bank parse failures: {report.get(f'{primary_lane}_parse_failure_count', 0)}",
             f"- Raw wrong-target actions: {report.get('raw_wrong_target_count', 0)}",
-            f"- Full-rule wrong-target actions: {report.get(f'{full_prefix}_wrong_target_count', 0)}",
+            f"- Primary bank wrong-target actions: {report.get(f'{primary_lane}_wrong_target_count', 0)}",
             f"- Raw verifier failures: {report.get('raw_verifier_failure_count', 0)}",
-            f"- Full-rule verifier failures: {report.get(f'{full_prefix}_verifier_failure_count', 0)}",
+            f"- Primary bank verifier failures: {report.get(f'{primary_lane}_verifier_failure_count', 0)}",
             f"- Raw boundary violations: {report.get('raw_boundary_violation_count', 0)}",
-            f"- Full-rule boundary violations: {report.get(f'{full_prefix}_boundary_violation_count', 0)}",
+            f"- Primary bank boundary violations: {report.get(f'{primary_lane}_boundary_violation_count', 0)}",
             f"- Raw avg latency ms: {report.get('raw_avg_latency_ms', 0)}",
-            f"- Full-rule avg latency ms: {report.get(f'{full_prefix}_avg_latency_ms', 0)}",
+            f"- Primary bank avg latency ms: {report.get(f'{primary_lane}_avg_latency_ms', 0)}",
             "",
         ]
     )
@@ -1757,7 +1776,7 @@ def render_quantity_replay_markdown(report: dict[str, Any]) -> str:
         [
         "## Holdout Results",
         "",
-        "| Case | Raw | Full Rule | Full-Rule Action | Retrieved |",
+        "| Case | Raw | Primary Bank | Primary Action | Retrieved |",
         "| --- | --- | --- | --- | --- |",
         ]
     )
@@ -1772,7 +1791,7 @@ def render_quantity_replay_markdown(report: dict[str, Any]) -> str:
             grouped.setdefault(key, {})[str(row.get("lane") or "")] = row
         for (case_id, trial_index), pair in sorted(grouped.items()):
             raw_row = dict(pair.get("raw") or {})
-            bank_row = dict(pair.get(LANE_FULL_RULE) or {})
+            bank_row = dict(pair.get(primary_lane) or {})
             bank_trace = dict(bank_row.get("trace") or {})
             action = dict(bank_trace.get("action") or {})
             retrieved = [str(rule.get("rule_id") or "") for rule in list(bank_row.get("retrieved_rules") or [])]
@@ -1848,17 +1867,32 @@ def sanitized_quantity_proof_report(report: dict[str, Any]) -> dict[str, Any]:
                 "retrieved_rule_ids": list(metadata.get("retrieved_rule_ids") or []),
             }
         )
+    teacher = dict(report.get("teacher_extraction") or {})
+    compressed = dict(teacher.get("compressed_transmutation") or {})
+    teacher_summary = {
+        "teacher_call_status": teacher.get("teacher_call_status", ""),
+        "teacher_model": teacher.get("teacher_model", ""),
+        "teacher_provider": teacher.get("teacher_provider", ""),
+        "teacher_parse_mode": teacher.get("teacher_parse_mode", ""),
+        "raw_teacher_response_hash": teacher.get("raw_teacher_response_hash", ""),
+        "compressed_transmutation_hash": teacher.get("compressed_transmutation_hash", ""),
+        "teacher_rule_id": compressed.get("rule_id", ""),
+        "teacher_trace_id": compressed.get("source_teacher_trace_id", ""),
+    }
     return {
         "replay_id": report.get("replay_id", ""),
         "generated_ts": report.get("generated_ts", 0),
         "student_model": report.get("student_model", ""),
         "trial_count_per_holdout": report.get("trial_count_per_holdout", 0),
         "lanes": list(report.get("lanes") or []),
+        "primary_bank_lane": report.get("primary_bank_lane", ""),
+        "lane_success_counts": dict(report.get("lane_success_counts") or {}),
         "raw_success_count": report.get("raw_success_count", 0),
-        "full_rule_success_count": report.get("bank_success_count", 0),
+        "primary_bank_success_count": report.get("bank_success_count", 0),
         "improvement_count": report.get("improvement_count", 0),
         "teacher_calls": report.get("teacher_calls", 0),
         "teacher_calls_in_student_lanes": report.get("teacher_calls_in_student_lanes", 0),
+        "teacher_summary": teacher_summary,
         "authenticity_audit": dict(report.get("authenticity_audit") or {}),
         "lane_metrics": dict(report.get("lane_metrics") or {}),
         "paired_discordance": list(report.get("paired_discordance") or []),
@@ -1881,8 +1915,9 @@ def write_sanitized_quantity_proof(*, report: dict[str, Any], out_dir: str | Pat
         "",
         f"- Student model: `{proof.get('student_model', '')}`",
         f"- Trials per holdout: {proof.get('trial_count_per_holdout', 0)}",
+        f"- Primary bank lane: `{proof.get('primary_bank_lane', '')}`",
         f"- Raw successes: {proof.get('raw_success_count', 0)}",
-        f"- Full-rule successes: {proof.get('full_rule_success_count', 0)}",
+        f"- Primary bank successes: {proof.get('primary_bank_success_count', 0)}",
         f"- Delta: {proof.get('improvement_count', 0)}",
         f"- Teacher calls: {proof.get('teacher_calls', 0)}",
         "",
@@ -1896,6 +1931,21 @@ def write_sanitized_quantity_proof(*, report: dict[str, Any], out_dir: str | Pat
         md_lines.append(
             f"| {item.get('lane', '')} | {item.get('raw_only_success', 0)} | "
             f"{item.get('lane_only_success', 0)} | {item.get('sign_test_p_value', 1.0)} |"
+        )
+    teacher = dict(proof.get("teacher_summary") or {})
+    if teacher.get("raw_teacher_response_hash") or teacher.get("teacher_rule_id"):
+        md_lines.extend(
+            [
+                "",
+                "## Teacher",
+                "",
+                f"- Status: `{teacher.get('teacher_call_status', '')}`",
+                f"- Model: `{teacher.get('teacher_model', '')}`",
+                f"- Rule ID: `{teacher.get('teacher_rule_id', '')}`",
+                f"- Teacher trace: `{teacher.get('teacher_trace_id', '')}`",
+                f"- Raw response hash: `{teacher.get('raw_teacher_response_hash', '')}`",
+                f"- Compressed rule hash: `{teacher.get('compressed_transmutation_hash', '')}`",
+            ]
         )
     md_lines.extend(["", "## Constraint Families", "", "| Family | Lane | Success | Trials |", "| --- | --- | ---: | ---: |"])
     for item in list(proof.get("constraint_family_summary") or []):

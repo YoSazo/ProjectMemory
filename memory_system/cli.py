@@ -1094,6 +1094,8 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
                 "bank_success_count": report.get("bank_success_count", 0),
                 "improvement_count": report.get("improvement_count", 0),
                 "lanes": report.get("lanes", []),
+                "primary_bank_lane": report.get("primary_bank_lane", ""),
+                "lane_success_counts": report.get("lane_success_counts", {}),
                 "teacher_calls": report.get("teacher_calls", 0),
                 "teacher_calls_in_student_lanes": report.get("teacher_calls_in_student_lanes", 0),
                 "authenticity_audit": report.get("authenticity_audit", {}),
