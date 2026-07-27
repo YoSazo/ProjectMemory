@@ -13,6 +13,10 @@ from memory_system.fortresses.agency_quantity_replay import (
     LANE_NVIDIA_SWAP_DIRECTION,
     LANE_NVIDIA_FAMILY_ONLY,
     LANE_NVIDIA_SEMANTIC,
+    LANE_LABEL_PRICE,
+    LANE_LABEL_QUANTITY,
+    LANE_LABEL_RANDOM,
+    LANE_LABEL_TEXT,
     QUANTITY_RULE_ID,
     _semantic_compiled_runtime_policy,
     _student_bank_packet,
@@ -158,6 +162,9 @@ def test_quantity_replay_freezes_train_and_holdout_manifests(tmp_path):
         "holdout_pair",
         "holdout_already_two",
         "holdout_accidental_three",
+        "holdout_overcount_four_to_two",
+        "holdout_overcount_five_to_three",
+        "holdout_overcount_wrong_item_distractor",
         "holdout_cart_only_quantity",
         "holdout_duplicated_plus_buttons",
         "holdout_checkout_unverified",
@@ -183,9 +190,9 @@ def test_quantity_replay_improves_frozen_student_without_teacher_calls():
     report = run_quantity_replay_proof(ledger=_quantity_ledger(), student_model="mistral:7b-instruct")
 
     assert report["teacher_calls_in_student_lanes"] == 0
-    assert report["case_count"] == 11
+    assert report["case_count"] == 14
     assert report["raw_success_count"] < report["bank_success_count"]
-    assert report["bank_success_count"] == 11
+    assert report["bank_success_count"] == 14
     assert report["improvement_count"] == report["bank_success_count"] - report["raw_success_count"]
     duplicated = next(row for row in report["rows"] if row["case"]["case_id"] == "holdout_duplicated_plus_buttons")
     assert duplicated["bank_trace"]["action"]["target_id"] == "pizza-plus"
@@ -214,8 +221,10 @@ def test_model_authentic_replay_requires_student_client_calls_and_scores_state()
         seed_base=100,
         lanes=("raw", "full_rich_rule"),
     )
+    expected_holdouts = sum(1 for case in cases if case.split == "holdout")
+    expected_episodes = expected_holdouts * 2
 
-    assert len(client.calls) == 32
+    assert len(client.calls) == expected_episodes * 2
     assert {call["seed"] for call in client.calls} == {100, 101}
     assert report["authenticity_audit"]["student_lanes_made_real_requests"] is True
     assert report["authenticity_audit"]["student_lanes_received_responses"] is True
@@ -224,9 +233,10 @@ def test_model_authentic_replay_requires_student_client_calls_and_scores_state()
     assert report["authenticity_audit"]["candidate_rule_from_nvidia_response"] is False
     assert report["teacher_calls_in_student_lanes"] == 0
     assert report["raw_success_count"] < report["bank_success_count"]
-    assert report["bank_success_count"] == 16
+    one_step_unsolved = 2 * 2
+    assert report["bank_success_count"] == expected_episodes - one_step_unsolved
     assert report["raw_verifier_failure_count"] > 0
-    assert report["paired_discordance"][0]["paired_count"] == 16
+    assert report["paired_discordance"][0]["paired_count"] == expected_episodes
 
 
 def test_model_authentic_lane_records_parse_failure_without_fallback():
@@ -309,9 +319,12 @@ def test_nvidia_semantic_and_family_only_packets_separate_teacher_knowledge():
 
     assert retrieved[0]["rule_id"] == rule_id
     assert semantic_packet[0]["runtime_policy"]["choose"]
+    assert "rule_id" not in semantic_packet[0]
+    assert "rule_id" not in semantic_packet[0]["runtime_policy"]
     assert semantic_packet[0]["runtime_policy"]["teacher_policy_clauses"]["action_when_below_target"]
-    assert "constraint_family" in family_packet[0]["runtime_policy"]
-    assert "choose" not in family_packet[0]["runtime_policy"]
+    assert family_packet[0]["constraint_frame"] == "numeric quantity constraint"
+    assert "rule_id" not in family_packet[0]
+    assert "runtime_policy" not in family_packet[0]
 
 
 def test_nvidia_semantic_clause_ablation_packets_are_causal():
@@ -348,13 +361,44 @@ def test_nvidia_semantic_clause_ablation_packets_are_causal():
     no_verifier = _student_bank_packet(equal_rule, lane=LANE_NVIDIA_NO_VERIFIER, snapshot=equal_case.snapshot())[0]["runtime_policy"]
 
     assert no_below["when"] == "current_quantity < requested_quantity"
-    assert no_below["choose"] == ""
+    assert no_below["choose"] == "observe item quantity state without selecting a quantity direction"
     assert no_above["when"] == "current_quantity > requested_quantity"
-    assert no_above["choose"] == ""
+    assert no_above["choose"] == "observe item quantity state without selecting a quantity direction"
     assert "causal_clause_ablation" not in swapped
     assert swapped["choose"] == "choose decrement/minus/stepper control scoped to requested item"
     assert no_verifier["when"] == "current_quantity == requested_quantity"
     assert no_verifier["choose"] == ""
+
+
+def test_minimal_label_controls_expose_only_constraint_frame():
+    case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_digit_2")
+    frames = {}
+    for lane in (LANE_LABEL_QUANTITY, LANE_LABEL_PRICE, LANE_LABEL_TEXT, LANE_LABEL_RANDOM):
+        packet = _student_bank_packet(
+            [
+                {
+                    "rule_id": f"{lane}_control_v0",
+                    "score": 0.0,
+                    "metadata": {
+                        "constraint_frame": {
+                            LANE_LABEL_QUANTITY: "numeric quantity constraint",
+                            LANE_LABEL_PRICE: "numeric price constraint",
+                            LANE_LABEL_TEXT: "text identity constraint",
+                            LANE_LABEL_RANDOM: "calendar color constraint",
+                        }[lane]
+                    },
+                }
+            ],
+            lane=lane,
+            snapshot=case.snapshot(),
+        )
+        assert list(packet[0]) == ["constraint_frame"]
+        frames[lane] = packet[0]["constraint_frame"]
+
+    assert frames[LANE_LABEL_QUANTITY] == "numeric quantity constraint"
+    assert frames[LANE_LABEL_PRICE] == "numeric price constraint"
+    assert frames[LANE_LABEL_TEXT] == "text identity constraint"
+    assert frames[LANE_LABEL_RANDOM] == "calendar color constraint"
 
 
 def test_nvidia_rule_is_quarantined_from_ubereats_without_explicit_transfer_scope():
@@ -414,8 +458,8 @@ def test_agency_quantity_replay_cli_writes_ledger_and_reports(tmp_path, monkeypa
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["student_model"] == "mistral:7b-instruct"
-    assert payload["case_count"] == 11
-    assert payload["bank_success_count"] == 11
+    assert payload["case_count"] == 14
+    assert payload["bank_success_count"] == 14
     assert payload["teacher_calls_in_student_lanes"] == 0
     assert (tmp_path / DEFAULT_AGENCY_LEDGER_PATH).exists()
     assert (out_dir / "quantity_replay_report.json").exists()

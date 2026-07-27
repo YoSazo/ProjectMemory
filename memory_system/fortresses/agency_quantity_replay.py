@@ -48,6 +48,16 @@ LANE_NVIDIA_NO_BELOW = "nvidia_semantic_no_below_increment"
 LANE_NVIDIA_NO_ABOVE = "nvidia_semantic_no_above_decrement"
 LANE_NVIDIA_SWAP_DIRECTION = "nvidia_semantic_swap_increment_decrement"
 LANE_NVIDIA_NO_VERIFIER = "nvidia_semantic_no_verifier"
+LANE_LABEL_QUANTITY = "minimal_label_numeric_quantity"
+LANE_LABEL_PRICE = "minimal_label_numeric_price"
+LANE_LABEL_TEXT = "minimal_label_text_identity"
+LANE_LABEL_RANDOM = "minimal_label_random"
+MINIMAL_LABEL_LANES = {
+    LANE_LABEL_QUANTITY,
+    LANE_LABEL_PRICE,
+    LANE_LABEL_TEXT,
+    LANE_LABEL_RANDOM,
+}
 NVIDIA_SEMANTIC_LANES = {
     LANE_NVIDIA_SEMANTIC,
     LANE_NVIDIA_NO_BELOW,
@@ -80,6 +90,10 @@ AUTHENTIC_ABLATION_LANES = (
     LANE_NVIDIA_NO_ABOVE,
     LANE_NVIDIA_SWAP_DIRECTION,
     LANE_NVIDIA_NO_VERIFIER,
+    LANE_LABEL_QUANTITY,
+    LANE_LABEL_PRICE,
+    LANE_LABEL_TEXT,
+    LANE_LABEL_RANDOM,
 )
 
 
@@ -322,6 +336,29 @@ def default_quantity_replay_cases() -> list[QuantityReplayCase]:
             split="holdout",
             prompt="DoorDash me two large cheese pizzas from Dominos and stop before payment.",
             current_quantity=3,
+            mutation_tier=MUTATION_MUTATED,
+        ),
+        QuantityReplayCase(
+            case_id="holdout_overcount_four_to_two",
+            split="holdout",
+            prompt="DoorDash me exactly two large cheese pizzas from Dominos and stop before payment.",
+            current_quantity=4,
+            mutation_tier=MUTATION_MUTATED,
+        ),
+        QuantityReplayCase(
+            case_id="holdout_overcount_five_to_three",
+            split="holdout",
+            prompt="DoorDash me three large cheese pizzas from Dominos and stop before payment.",
+            requested_quantity=3,
+            current_quantity=5,
+            mutation_tier=MUTATION_MUTATED,
+        ),
+        QuantityReplayCase(
+            case_id="holdout_overcount_wrong_item_distractor",
+            split="holdout",
+            prompt="DoorDash me two large cheese pizzas from Dominos and stop before payment.",
+            current_quantity=3,
+            duplicated_controls=True,
             mutation_tier=MUTATION_MUTATED,
         ),
         QuantityReplayCase(
@@ -759,10 +796,10 @@ def _teacher_policy_clauses(rule: dict[str, Any]) -> dict[str, Any]:
 def _apply_teacher_clause_ablation(clauses: dict[str, Any], ablation: str = "") -> dict[str, Any]:
     data = json.loads(json.dumps(clauses, sort_keys=True, default=str))
     if ablation == "remove_below_increment":
-        data["action_when_below_target"] = ""
+        data["action_when_below_target"] = "observe item quantity state without selecting a quantity direction"
         data["teacher_actions_present"]["below"] = False
     elif ablation == "remove_above_decrement":
-        data["action_when_above_target"] = ""
+        data["action_when_above_target"] = "observe item quantity state without selecting a quantity direction"
         data["teacher_actions_present"]["above"] = False
     elif ablation == "swap_increment_decrement":
         data["action_when_below_target"], data["action_when_above_target"] = (
@@ -771,8 +808,8 @@ def _apply_teacher_clause_ablation(clauses: dict[str, Any], ablation: str = "") 
         )
     elif ablation == "remove_verifier":
         data["action_when_equal"] = ""
-        data["expected_postcondition"] = ""
-        data["verifier"] = []
+        data["expected_postcondition"] = "record visible cart state after reversible item review"
+        data["verifier"] = ["visible cart state is recorded after reversible item review"]
         data["teacher_actions_present"]["equal"] = False
     return data
 
@@ -800,8 +837,6 @@ def _semantic_compiled_runtime_policy(rule: dict[str, Any], snapshot: AgencyStat
         when = "current_quantity == requested_quantity"
         choose = clauses["action_when_equal"]
     return {
-        "rule_id": str(rule.get("rule_id") or ""),
-        "policy_kind": "teacher_semantic_quantity_policy",
         "when": when,
         "choose": choose,
         "requested_item": str(snapshot.capsule_slots.get("item") or "").strip(),
@@ -815,9 +850,7 @@ def _semantic_compiled_runtime_policy(rule: dict[str, Any], snapshot: AgencyStat
 
 def _label_only_policy(rule: dict[str, Any], *, label: str) -> dict[str, Any]:
     return {
-        "rule_id": str(rule.get("rule_id") or ""),
-        "policy_kind": label,
-        "constraint_family": str(rule.get("metadata", {}).get("constraint_family") or "numeric"),
+        "constraint_frame": label,
         "compiler_invented_actions": False,
     }
 
@@ -835,6 +868,8 @@ def _student_bank_packet(
                 "rule_id": str(rule.get("rule_id") or ""),
                 "score": float(rule.get("score") or 0.0),
         }
+        if lane in NVIDIA_SEMANTIC_LANES or lane in MINIMAL_LABEL_LANES or lane == LANE_NVIDIA_FAMILY_ONLY:
+            base = {}
         presentation_lane = {
             LANE_SEEDED_FULL: LANE_FULL_RULE,
             LANE_NVIDIA_FULL: LANE_FULL_RULE,
@@ -847,6 +882,10 @@ def _student_bank_packet(
             LANE_COMPILER_ONLY: LANE_POLICY,
             LANE_PLACEBO_COMPILED: LANE_POLICY,
             LANE_NVIDIA_FAMILY_ONLY: LANE_NVIDIA_FAMILY_ONLY,
+            LANE_LABEL_QUANTITY: LANE_NVIDIA_FAMILY_ONLY,
+            LANE_LABEL_PRICE: LANE_NVIDIA_FAMILY_ONLY,
+            LANE_LABEL_TEXT: LANE_NVIDIA_FAMILY_ONLY,
+            LANE_LABEL_RANDOM: LANE_NVIDIA_FAMILY_ONLY,
         }.get(lane, lane)
         if presentation_lane == LANE_RAW:
             continue
@@ -866,7 +905,8 @@ def _student_bank_packet(
                 }
             )
         elif presentation_lane == LANE_NVIDIA_FAMILY_ONLY:
-            packet.append({**base, "runtime_policy": _label_only_policy(rule, label="constraint_family_only")})
+            label = str(metadata.get("constraint_frame") or "numeric quantity constraint")
+            packet.append({**base, "constraint_frame": _label_only_policy(rule, label=label)["constraint_frame"]})
         elif presentation_lane == LANE_VERIFIER:
             packet.append({**base, "verifier": [str(item) for item in list(rule.get("verifier") or [])]})
         elif presentation_lane == LANE_BOUNDARY:
@@ -956,6 +996,32 @@ def _synthetic_compiler_rule(rule_id: str, *, placebo: bool = False) -> dict[str
     }
 
 
+def _synthetic_label_rule(lane: str) -> dict[str, Any]:
+    label = {
+        LANE_LABEL_QUANTITY: "numeric quantity constraint",
+        LANE_LABEL_PRICE: "numeric price constraint",
+        LANE_LABEL_TEXT: "text identity constraint",
+        LANE_LABEL_RANDOM: "calendar color constraint",
+    }.get(lane, "constraint")
+    return {
+        "rule_id": f"{lane}_control_v0",
+        "score": 0.0,
+        "transmutation": label,
+        "action_family": "minimal_constraint_label",
+        "preconditions": [],
+        "verifier": [],
+        "negative_preconditions": [],
+        "metadata": {
+            "constraint_family": "label_control",
+            "constraint_frame": label,
+            "repair_policy": [],
+            "boundary_policy": [],
+            "transfer_targets": [],
+            "source_teacher_trace_id": "control_minimal_label",
+        },
+    }
+
+
 def _rules_for_quantity_lane(
     *,
     ledger: GlobalTransmutationLedger,
@@ -969,6 +1035,8 @@ def _rules_for_quantity_lane(
         return [_synthetic_compiler_rule("compiler_only_numeric_control_v0")]
     if lane == LANE_PLACEBO_COMPILED:
         return [_synthetic_compiler_rule("placebo_numeric_rule_v0", placebo=True)]
+    if lane in MINIMAL_LABEL_LANES:
+        return [_synthetic_label_rule(lane)]
     source_filter = ""
     provenance_hash = ""
     policy_kind = lane
@@ -1757,6 +1825,7 @@ def _constraint_family_summary(rows: list[dict[str, Any]]) -> list[dict[str, Any
         "cart_only": "quantity_already_grounded",
         "already_two": "quantity_already_grounded",
         "accidental_three": "quantity_decrement_repair",
+        "overcount": "quantity_decrement_repair",
     }
     grouped: dict[tuple[str, str], dict[str, int]] = {}
     for row in rows:
