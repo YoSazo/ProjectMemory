@@ -131,6 +131,9 @@ def test_quantity_replay_freezes_train_and_holdout_manifests(tmp_path):
         "holdout_duplicated_plus_buttons",
         "holdout_checkout_unverified",
         "holdout_ubereats_sibling_stepper",
+        "holdout_quantity_three",
+        "holdout_quantity_four",
+        "holdout_alias_pie_irrelevant_numeric",
     }
 
 
@@ -149,9 +152,9 @@ def test_quantity_replay_improves_frozen_student_without_teacher_calls():
     report = run_quantity_replay_proof(ledger=_quantity_ledger(), student_model="mistral:7b-instruct")
 
     assert report["teacher_calls_in_student_lanes"] == 0
-    assert report["case_count"] == 8
+    assert report["case_count"] == 11
     assert report["raw_success_count"] < report["bank_success_count"]
-    assert report["bank_success_count"] == 8
+    assert report["bank_success_count"] == 11
     assert report["improvement_count"] == report["bank_success_count"] - report["raw_success_count"]
     duplicated = next(row for row in report["rows"] if row["case"]["case_id"] == "holdout_duplicated_plus_buttons")
     assert duplicated["bank_trace"]["action"]["target_id"] == "pizza-plus"
@@ -166,21 +169,33 @@ def test_quantity_student_lane_rejects_teacher_client():
 
 def test_model_authentic_replay_requires_student_client_calls_and_scores_state():
     client = FakeStudentClient()
+    cases = [case for case in default_quantity_replay_cases() if case.split == "train" or case.case_id not in {
+        "holdout_quantity_three",
+        "holdout_quantity_four",
+        "holdout_alias_pie_irrelevant_numeric",
+    }]
     report = run_quantity_model_authentic_replay(
         ledger=_quantity_ledger(),
         student_client=client,
         student_model="mistral:7b-instruct",
+        cases=cases,
         trials=2,
+        seed_base=100,
+        lanes=("raw", "full_rich_rule"),
     )
 
     assert len(client.calls) == 32
+    assert {call["seed"] for call in client.calls} == {100, 101}
     assert report["authenticity_audit"]["student_lanes_made_real_requests"] is True
+    assert report["authenticity_audit"]["student_lanes_received_responses"] is True
+    assert report["authenticity_audit"]["student_lanes_parsed_responses"] is True
     assert report["authenticity_audit"]["hardcoded_policy_selected_student_actions"] is False
     assert report["authenticity_audit"]["candidate_rule_from_nvidia_response"] is False
     assert report["teacher_calls_in_student_lanes"] == 0
     assert report["raw_success_count"] < report["bank_success_count"]
     assert report["bank_success_count"] == 16
     assert report["raw_verifier_failure_count"] > 0
+    assert report["paired_discordance"][0]["paired_count"] == 16
 
 
 def test_model_authentic_lane_records_parse_failure_without_fallback():
@@ -190,12 +205,16 @@ def test_model_authentic_lane_records_parse_failure_without_fallback():
         model="mistral:7b-instruct",
         client=FakeStudentClient(malformed=True),
         retrieved_rules=[],
+        seed=123,
     )
 
     assert result["success"] is False
     assert result["parse_failure"] is True
     assert result["execution"]["failure_type"] == "parse_failure"
     assert result["decision"] is None
+    assert result["request_attempted"] is True
+    assert result["response_received"] is True
+    assert result["response_parsed"] is False
 
 
 def test_live_teacher_extraction_preserves_response_hash_and_holdout_guard():
@@ -227,8 +246,8 @@ def test_agency_quantity_replay_cli_writes_ledger_and_reports(tmp_path, monkeypa
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["student_model"] == "mistral:7b-instruct"
-    assert payload["case_count"] == 8
-    assert payload["bank_success_count"] == 8
+    assert payload["case_count"] == 11
+    assert payload["bank_success_count"] == 11
     assert payload["teacher_calls_in_student_lanes"] == 0
     assert (tmp_path / DEFAULT_AGENCY_LEDGER_PATH).exists()
     assert (out_dir / "quantity_replay_report.json").exists()

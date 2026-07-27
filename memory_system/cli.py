@@ -142,6 +142,7 @@ from .fortresses.agency_quantity_replay import (
     run_quantity_model_authentic_replay,
     run_quantity_replay_proof,
     seed_quantity_teacher_transmutation,
+    write_sanitized_quantity_proof,
     write_quantity_manifests,
     write_quantity_replay_report,
 )
@@ -924,7 +925,11 @@ def _handle_agency_nvidia_smoke(args: argparse.Namespace) -> int:
 
 def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
     ledger_path = Path(args.ledger or DEFAULT_AGENCY_LEDGER_PATH).expanduser().resolve()
-    ledger = GlobalTransmutationLedger.read_json(ledger_path) if ledger_path.exists() else GlobalTransmutationLedger()
+    ledger = (
+        GlobalTransmutationLedger()
+        if args.live_teacher and not args.reuse_ledger
+        else (GlobalTransmutationLedger.read_json(ledger_path) if ledger_path.exists() else GlobalTransmutationLedger())
+    )
     teacher_extraction: dict[str, Any] = {}
     teacher_call_count = 0
     if args.live_teacher:
@@ -969,6 +974,8 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
     if args.mode == "authentic":
         student_base_url = args.student_base_url or UniversalLLMClient._default_base_url_from_env("ollama")
         student_client = UniversalLLMClient(provider="ollama", base_url=student_base_url)
+        lanes = tuple(args.lane or [])
+        teacher_hash = str(teacher_extraction.get("raw_teacher_response_hash") or "")
         report = run_quantity_model_authentic_replay(
             ledger=ledger,
             student_client=student_client,
@@ -979,6 +986,10 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
             seed_base=args.seed_base,
             teacher_call_count=teacher_call_count,
             candidate_rule_from_nvidia_response=bool(teacher_extraction.get("compressed_transmutation")),
+            lanes=lanes or None,
+            expose_candidate_metadata=not args.hide_candidate_metadata,
+            required_teacher_response_hash=teacher_hash if args.live_teacher else "",
+            max_steps=args.max_steps,
         )
     else:
         report = run_quantity_replay_proof(ledger=ledger, student_model=args.student_model)
@@ -991,6 +1002,8 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
         teacher_path = out_dir / "quantity_teacher_extraction.json"
         teacher_path.write_text(json.dumps(teacher_extraction, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         artifacts["teacher_extraction_json"] = str(teacher_path)
+    if args.proof_dir:
+        artifacts.update(write_sanitized_quantity_proof(report=report, out_dir=args.proof_dir))
     if args.json:
         _print_json(
             {
@@ -1002,15 +1015,17 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
                 "raw_success_count": report.get("raw_success_count", 0),
                 "bank_success_count": report.get("bank_success_count", 0),
                 "improvement_count": report.get("improvement_count", 0),
+                "lanes": report.get("lanes", []),
                 "teacher_calls": report.get("teacher_calls", 0),
                 "teacher_calls_in_student_lanes": report.get("teacher_calls_in_student_lanes", 0),
                 "authenticity_audit": report.get("authenticity_audit", {}),
                 "raw_parse_failure_count": report.get("raw_parse_failure_count", 0),
-                "bank_parse_failure_count": report.get("bank_parse_failure_count", 0),
+                "full_rich_rule_parse_failure_count": report.get("full_rich_rule_parse_failure_count", 0),
                 "raw_wrong_target_count": report.get("raw_wrong_target_count", 0),
-                "bank_wrong_target_count": report.get("bank_wrong_target_count", 0),
+                "full_rich_rule_wrong_target_count": report.get("full_rich_rule_wrong_target_count", 0),
                 "raw_boundary_violation_count": report.get("raw_boundary_violation_count", 0),
-                "bank_boundary_violation_count": report.get("bank_boundary_violation_count", 0),
+                "full_rich_rule_boundary_violation_count": report.get("full_rich_rule_boundary_violation_count", 0),
+                "paired_discordance": report.get("paired_discordance", []),
                 "ledger_summary": report.get("ledger_summary", {}),
             }
         )
@@ -2708,6 +2723,11 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_quantity.add_argument("--teacher-max-tokens", type=int, default=2048)
     agency_quantity.add_argument("--live-teacher", action="store_true", help="Call NVIDIA once to extract the train-only quantity rule.")
     agency_quantity.add_argument(
+        "--reuse-ledger",
+        action="store_true",
+        help="When --live-teacher is set, reuse the existing ledger instead of starting with a clean experiment ledger.",
+    )
+    agency_quantity.add_argument(
         "--ledger",
         default=DEFAULT_AGENCY_LEDGER_PATH,
         help="Durable agency ledger path. Defaults to .memla/agency_transmutation_ledger.json.",
@@ -2719,14 +2739,35 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Seed the quantity rule into the durable ledger before replay. Enabled by default.",
     )
     agency_quantity.add_argument("--trials", type=int, default=5, help="Trials per holdout in authentic mode.")
+    agency_quantity.add_argument("--max-steps", type=int, default=1, help="Max observe-act-reobserve steps per lane trial.")
     agency_quantity.add_argument("--temperature", type=float, default=0.1)
     agency_quantity.add_argument("--num-ctx", type=int, default=None)
     agency_quantity.add_argument("--seed-base", type=int, default=None, help="Recorded seed base where supported by the client.")
+    agency_quantity.add_argument(
+        "--lane",
+        action="append",
+        choices=[
+            "raw",
+            "full_rich_rule",
+            "transmutation_sentence",
+            "condition_action_policy",
+            "verifier_only",
+            "boundary_policy_only",
+        ],
+        default=[],
+        help="Ablation lane to run. Repeat for multiple. Defaults to all lanes.",
+    )
+    agency_quantity.add_argument(
+        "--hide-candidate-metadata",
+        action="store_true",
+        help="Hide quantity_action and item_context metadata from candidate actions in the student prompt.",
+    )
     agency_quantity.add_argument(
         "--out-dir",
         default="memla_reports/agency_quantity_replay",
         help="Directory for replay reports and frozen case manifests.",
     )
+    agency_quantity.add_argument("--proof-dir", default="proof", help="Directory for sanitized git-reviewable proof artifacts.")
     agency_quantity.add_argument("--json", action="store_true", help="Print a compact JSON summary.")
     agency_quantity.set_defaults(func=_handle_agency_quantity_replay)
 

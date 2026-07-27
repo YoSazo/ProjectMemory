@@ -126,6 +126,7 @@ class UniversalLLMClient:
         num_ctx: Optional[int] = None,
         max_tokens: Optional[int] = None,
         reasoning_effort: str | None = None,
+        seed: Optional[int] = None,
     ) -> str:
         return self.chat_response(
             model=model,
@@ -134,6 +135,7 @@ class UniversalLLMClient:
             num_ctx=num_ctx,
             max_tokens=max_tokens,
             reasoning_effort=reasoning_effort,
+            seed=seed,
         ).content
 
     def chat_response(
@@ -145,11 +147,18 @@ class UniversalLLMClient:
         num_ctx: Optional[int] = None,
         max_tokens: Optional[int] = None,
         reasoning_effort: str | None = None,
+        seed: Optional[int] = None,
     ) -> ChatResponse:
         if self.provider == "ollama":
             return ChatResponse(
-                content=self._chat_ollama(model=model, messages=messages, temperature=temperature, num_ctx=num_ctx),
-                request_metadata={"provider": self.provider, "model": model},
+                content=self._chat_ollama(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    num_ctx=num_ctx,
+                    seed=seed,
+                ),
+                request_metadata={"provider": self.provider, "model": model, "seed": seed},
             )
         if self.provider == "anthropic":
             return ChatResponse(
@@ -305,6 +314,7 @@ class UniversalLLMClient:
         messages: list[ChatMessage],
         temperature: float,
         num_ctx: Optional[int],
+        seed: Optional[int],
     ) -> str:
         url = f"{self.base_url}/api/chat"
         payload: dict[str, Any] = {
@@ -316,6 +326,8 @@ class UniversalLLMClient:
         }
         if num_ctx is not None:
             payload["options"]["num_ctx"] = int(num_ctx)
+        if seed is not None:
+            payload["options"]["seed"] = int(seed)
 
         resp = requests.post(url, json=payload, timeout=600, headers=self.headers)
         resp.raise_for_status()

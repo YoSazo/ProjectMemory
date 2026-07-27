@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 import hashlib
 import json
 import re
@@ -30,6 +30,22 @@ from .meta_fortress import GlobalTransmutationLedger, TransferLedgerEntry
 DEFAULT_AGENCY_LEDGER_PATH = ".memla/agency_transmutation_ledger.json"
 QUANTITY_RULE_ID = "agency_numeric_quantity_visible_evidence_v1"
 QUANTITY_REPLAY_ID = "agency_quantity_replay_v0"
+
+LANE_RAW = "raw"
+LANE_FULL_RULE = "full_rich_rule"
+LANE_SENTENCE = "transmutation_sentence"
+LANE_POLICY = "condition_action_policy"
+LANE_VERIFIER = "verifier_only"
+LANE_BOUNDARY = "boundary_policy_only"
+
+AUTHENTIC_ABLATION_LANES = (
+    LANE_RAW,
+    LANE_FULL_RULE,
+    LANE_SENTENCE,
+    LANE_POLICY,
+    LANE_VERIFIER,
+    LANE_BOUNDARY,
+)
 
 
 @dataclass(frozen=True)
@@ -301,6 +317,27 @@ def default_quantity_replay_cases() -> list[QuantityReplayCase]:
             page_kind="ue_item_modal",
             mutation_tier=MUTATION_SIBLING,
         ),
+        QuantityReplayCase(
+            case_id="holdout_quantity_three",
+            split="holdout",
+            prompt="DoorDash me three large cheese pizzas from Dominos and stop before payment.",
+            requested_quantity=3,
+            mutation_tier=MUTATION_MUTATED,
+        ),
+        QuantityReplayCase(
+            case_id="holdout_quantity_four",
+            split="holdout",
+            prompt="DoorDash me 4 large cheese pizzas from Dominos and stop before payment.",
+            requested_quantity=4,
+            mutation_tier=MUTATION_MUTATED,
+        ),
+        QuantityReplayCase(
+            case_id="holdout_alias_pie_irrelevant_numeric",
+            split="holdout",
+            prompt="DoorDash me two large cheese pies from Dominos; ignore the 30 minute delivery estimate and stop before payment.",
+            item_label="Large Cheese Pie",
+            mutation_tier=MUTATION_MUTATED,
+        ),
     ]
 
 
@@ -410,13 +447,21 @@ def extract_live_quantity_teacher_rule(
     if compressed_rows:
         transmutation = CompressedTransmutation(**compressed_rows[0]).normalized()
     raw_response = str(report.get("raw_teacher_response") or "")
+    raw_hash = _stable_hash(raw_response)
+    if transmutation is not None:
+        data = transmutation.to_dict()
+        metadata = dict(data.get("metadata") or {})
+        metadata["raw_teacher_response_hash"] = raw_hash
+        metadata["teacher_provider"] = "nvidia"
+        data["metadata"] = metadata
+        transmutation = CompressedTransmutation(**data).normalized()
     return {
         "teacher_call_status": report.get("teacher_call_status", ""),
         "teacher_model": teacher_model,
         "teacher_provider": "nvidia",
         "teacher_parse_mode": report.get("teacher_parse_mode", ""),
         "raw_teacher_response": raw_response,
-        "raw_teacher_response_hash": _stable_hash(raw_response),
+        "raw_teacher_response_hash": raw_hash,
         "raw_teacher_reasoning_content": str(report.get("raw_teacher_reasoning_content") or ""),
         "teacher_usage": dict(report.get("teacher_usage") or {}),
         "teacher_request_metadata": dict(report.get("teacher_request_metadata") or {}),
@@ -439,7 +484,8 @@ def quantity_transmutation_to_ledger_entry(
     page_kind: str = "dd_item_modal",
     mutation_tier: str = MUTATION_SAME,
 ) -> TransferLedgerEntry:
-    rule_id = QUANTITY_RULE_ID if transmutation.constraint_family == "numeric" else transmutation.rule_id
+    is_seed_rule = str(transmutation.source_teacher_trace_id or "").startswith("seeded_")
+    rule_id = QUANTITY_RULE_ID if is_seed_rule and transmutation.constraint_family == "numeric" else transmutation.rule_id
     return TransferLedgerEntry(
         entry_id="",
         rule_id=rule_id,
@@ -468,6 +514,9 @@ def quantity_transmutation_to_ledger_entry(
             "repair_policy": list(transmutation.repair_policy),
             "boundary_policy": list(transmutation.boundary_policy),
             "transfer_targets": list(transmutation.transfer_targets),
+            "raw_teacher_response_hash": str(transmutation.metadata.get("raw_teacher_response_hash") or ""),
+            "compressed_transmutation_hash": _stable_hash(transmutation.to_dict()),
+            "source_teacher_trace_id": transmutation.source_teacher_trace_id,
         },
     ).normalized()
 
@@ -486,18 +535,41 @@ def retrieve_quantity_rules(
     ledger: GlobalTransmutationLedger,
     snapshot: AgencyStateSnapshot,
     limit: int = 3,
+    policy_kind: str = LANE_FULL_RULE,
+    require_provenance_hash: str = "",
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    current = int(snapshot.metadata.get("current_quantity") or 0)
+    requested = int(snapshot.metadata.get("requested_quantity") or 0)
+    has_quantity_control = any(
+        str(candidate.metadata.get("quantity_action") or "") in {"increment", "decrement"}
+        for candidate in snapshot.candidates
+    )
+    missing_evidence = bool(snapshot.residuals) or snapshot.boundary_state in {"near_boundary", "at_boundary"}
     for entry in ledger.entries:
         metadata = dict(entry.metadata or {})
+        if require_provenance_hash and str(metadata.get("raw_teacher_response_hash") or "") != require_provenance_hash:
+            continue
         family = str(metadata.get("constraint_family") or "").lower()
         if family and family != "numeric":
             continue
-        app_match = entry.repo_family in {"", snapshot.app_family} or snapshot.app_family in {
+        transfer_targets = {
             str(target).lower().replace(" ", "")
             for target in list(metadata.get("transfer_targets") or [])
         }
+        app_match = entry.repo_family in {"", snapshot.app_family} or snapshot.app_family in transfer_targets
         if not app_match and snapshot.app_family != "ubereats":
+            continue
+        if snapshot.app_family == "ubereats" and snapshot.app_family not in transfer_targets and entry.repo_family != snapshot.app_family:
+            continue
+        if policy_kind in {LANE_FULL_RULE, LANE_SENTENCE, LANE_POLICY}:
+            if current == requested:
+                continue
+            if not (has_quantity_control or missing_evidence):
+                continue
+        if policy_kind == LANE_BOUNDARY and snapshot.boundary_state not in {"near_boundary", "at_boundary"}:
+            continue
+        if policy_kind == LANE_VERIFIER and not missing_evidence and current != requested:
             continue
         page_score = 1.0 if str(metadata.get("page_kind") or "") in {"", snapshot.page_kind} else 0.65
         cue_text = " ".join(list(metadata.get("observation_cues") or []) + entry.preconditions).lower()
@@ -533,7 +605,7 @@ def _choose_quantity_candidate(snapshot: AgencyStateSnapshot, *, current: int, r
     return candidates[0]
 
 
-def _candidate_rows(snapshot: AgencyStateSnapshot) -> list[dict[str, Any]]:
+def _candidate_rows(snapshot: AgencyStateSnapshot, *, expose_metadata: bool = True) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for candidate in snapshot.candidates:
         item = candidate.normalized()
@@ -544,7 +616,7 @@ def _candidate_rows(snapshot: AgencyStateSnapshot) -> list[dict[str, Any]]:
                 "label": item.label,
                 "text": item.text,
                 "safety": item.safety,
-                "metadata": dict(item.metadata),
+                "metadata": dict(item.metadata) if expose_metadata else {},
             }
         )
     if not any(row["target_id"] == "add-to-cart" for row in rows):
@@ -555,28 +627,75 @@ def _candidate_rows(snapshot: AgencyStateSnapshot) -> list[dict[str, Any]]:
                 "label": "Add to cart",
                 "text": "Add to cart",
                 "safety": SAFETY_SAFE,
-                "metadata": {"cart_action": "add"},
+                "metadata": {"cart_action": "add"} if expose_metadata else {},
             }
         )
     return rows
 
 
-def _student_bank_packet(retrieved_rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _compiled_runtime_policy(rule: dict[str, Any], snapshot: AgencyStateSnapshot) -> dict[str, Any]:
+    current = int(snapshot.metadata.get("current_quantity") or 0)
+    requested = int(snapshot.metadata.get("requested_quantity") or 0)
+    item = str(snapshot.capsule_slots.get("item") or "").strip()
+    if current < requested:
+        when = "current_quantity < requested_quantity"
+        choose = "increment control scoped to requested item"
+        otherwise = "stop if no scoped increment control exists"
+    elif current > requested:
+        when = "current_quantity > requested_quantity"
+        choose = "decrement control scoped to requested item"
+        otherwise = "stop if no scoped decrement control exists"
+    else:
+        when = "current_quantity == requested_quantity"
+        choose = "verify quantity; do not adjust"
+        otherwise = "proceed only after the quantity phase is grounded"
+    return {
+        "rule_id": str(rule.get("rule_id") or ""),
+        "policy_kind": "condition_action_quantity_policy",
+        "when": when,
+        "choose": choose,
+        "requested_item": item,
+        "verify": "fresh visible quantity equals requested_quantity for requested_item",
+        "otherwise": otherwise,
+        "forbidden": ["Add to cart is not a quantity adjustment", "Place Order/payment while quantity unverified"],
+    }
+
+
+def _student_bank_packet(
+    retrieved_rules: list[dict[str, Any]],
+    *,
+    lane: str,
+    snapshot: AgencyStateSnapshot,
+) -> list[dict[str, Any]]:
     packet: list[dict[str, Any]] = []
     for rule in retrieved_rules:
         metadata = dict(rule.get("metadata") or {})
-        packet.append(
-            {
+        base = {
                 "rule_id": str(rule.get("rule_id") or ""),
+                "score": float(rule.get("score") or 0.0),
+        }
+        if lane == LANE_RAW:
+            continue
+        if lane == LANE_SENTENCE:
+            packet.append({**base, "transmutation": str(rule.get("transmutation") or "")})
+        elif lane == LANE_POLICY:
+            packet.append({**base, "runtime_policy": _compiled_runtime_policy(rule, snapshot)})
+        elif lane == LANE_VERIFIER:
+            packet.append({**base, "verifier": [str(item) for item in list(rule.get("verifier") or [])]})
+        elif lane == LANE_BOUNDARY:
+            packet.append({**base, "boundary_policy": [str(item) for item in list(metadata.get("boundary_policy") or [])]})
+        else:
+            packet.append(
+                {
+                **base,
                 "transmutation": str(rule.get("transmutation") or ""),
                 "action_family": str(rule.get("action_family") or ""),
                 "preconditions": [str(item) for item in list(rule.get("preconditions") or [])],
                 "verifier": [str(item) for item in list(rule.get("verifier") or [])],
                 "repair_policy": [str(item) for item in list(metadata.get("repair_policy") or [])],
                 "boundary_policy": [str(item) for item in list(metadata.get("boundary_policy") or [])],
-                "score": float(rule.get("score") or 0.0),
-            }
-        )
+                }
+            )
     return packet
 
 
@@ -585,6 +704,8 @@ def build_quantity_student_messages(
     case: QuantityReplayCase,
     retrieved_rules: list[dict[str, Any]],
     trial_index: int,
+    lane: str = LANE_FULL_RULE,
+    expose_candidate_metadata: bool = True,
 ) -> list[ChatMessage]:
     snapshot = case.snapshot()
     state_packet = {
@@ -597,8 +718,10 @@ def build_quantity_student_messages(
         "requested_quantity": int(snapshot.metadata.get("requested_quantity") or case.requested_quantity),
         "boundary_state": snapshot.boundary_state,
         "residuals": list(snapshot.residuals),
-        "candidate_actions": _candidate_rows(snapshot),
-        "bank_packet": _student_bank_packet(retrieved_rules),
+        "candidate_actions": _candidate_rows(snapshot, expose_metadata=expose_candidate_metadata),
+        "bank_packet": _student_bank_packet(retrieved_rules, lane=lane, snapshot=snapshot),
+        "bank_lane": lane,
+        "candidate_metadata_visible": bool(expose_candidate_metadata),
         "trial_index": trial_index,
     }
     system = (
@@ -718,32 +841,56 @@ def run_quantity_model_student_lane(
     temperature: float = 0.1,
     num_ctx: int | None = None,
     seed: int | None = None,
+    lane: str = LANE_FULL_RULE,
+    expose_candidate_metadata: bool = True,
     teacher_client: Any | None = None,
 ) -> dict[str, Any]:
     if teacher_client is not None:
         raise RuntimeError("Teacher client is forbidden in quantity replay student lanes.")
     started = time.time()
     rules = retrieved_rules or []
-    messages = build_quantity_student_messages(case=case, retrieved_rules=rules, trial_index=trial_index)
-    model_request_hash = _stable_hash(
-        {
+    messages = build_quantity_student_messages(
+        case=case,
+        retrieved_rules=rules,
+        trial_index=trial_index,
+        lane=lane,
+        expose_candidate_metadata=expose_candidate_metadata,
+    )
+    request_payload = {
             "model": model,
             "messages": [asdict(message) for message in messages],
             "temperature": temperature,
             "num_ctx": num_ctx,
             "seed": seed,
-        }
-    )
+    }
+    model_request_hash = _stable_hash(request_payload)
     raw_response = ""
     request_metadata: dict[str, Any] = {}
     error = ""
+    request_attempted = True
+    response_received = False
     try:
         if hasattr(client, "chat_response"):
-            response = client.chat_response(model=model, messages=messages, temperature=temperature, num_ctx=num_ctx)
+            response = client.chat_response(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                num_ctx=num_ctx,
+                seed=seed,
+            )
             raw_response = response.content if isinstance(response, ChatResponse) else str(getattr(response, "content", ""))
             request_metadata = dict(getattr(response, "request_metadata", None) or {})
         else:
-            raw_response = str(client.chat(model=model, messages=messages, temperature=temperature, num_ctx=num_ctx))
+            raw_response = str(
+                client.chat(
+                    model=model,
+                    messages=messages,
+                    temperature=temperature,
+                    num_ctx=num_ctx,
+                    seed=seed,
+                )
+            )
+        response_received = True
     except Exception as exc:
         error = str(exc)[:900]
     latency_ms = int((time.time() - started) * 1000)
@@ -786,16 +933,22 @@ def run_quantity_model_student_lane(
         mutation_tier=case.mutation_tier,
         metadata={
             "model_authentic": True,
-            "student_request_made": bool(raw_response or error),
+            "request_attempted": request_attempted,
+            "response_received": response_received,
+            "response_parsed": decision is not None,
+            "action_executed": decision is not None,
             "raw_student_response": raw_response,
             "student_response_hash": _stable_hash(raw_response),
             "model_request_hash": model_request_hash,
+            "model_request_payload": request_payload,
             "request_metadata": request_metadata,
             "parse_mode": parse_mode,
             "parse_error": parse_error,
             "latency_ms": latency_ms,
             "seed": seed,
             "trial_index": trial_index,
+            "lane": lane,
+            "candidate_metadata_visible": expose_candidate_metadata,
             "retrieved_rule_ids": [str(rule.get("rule_id") or "") for rule in rules],
             "execution": execution.to_dict(),
         },
@@ -810,7 +963,134 @@ def run_quantity_model_student_lane(
         "boundary_violation": execution.boundary_violation,
         "verifier_failure": execution.failure_type == "verifier_failure",
         "latency_ms": latency_ms,
-        "student_request_made": True,
+        "request_attempted": request_attempted,
+        "response_received": response_received,
+        "response_parsed": decision is not None,
+        "action_executed": decision is not None,
+        "student_request_made": response_received,
+    }
+
+
+def run_quantity_model_episode_lane(
+    *,
+    case: QuantityReplayCase,
+    model: str,
+    client: UniversalLLMClient,
+    retrieved_rules: list[dict[str, Any]] | None = None,
+    trial_index: int = 0,
+    temperature: float = 0.1,
+    num_ctx: int | None = None,
+    seed: int | None = None,
+    lane: str = LANE_FULL_RULE,
+    expose_candidate_metadata: bool = True,
+    max_steps: int = 1,
+) -> dict[str, Any]:
+    current = int(case.current_quantity)
+    requested = int(case.requested_quantity)
+    steps: list[dict[str, Any]] = []
+    terminal: dict[str, Any] | None = None
+    for step_index in range(max(int(max_steps), 1)):
+        step_case = replace(case, current_quantity=current)
+        step_seed = None if seed is None else int(seed) + step_index
+        result = run_quantity_model_student_lane(
+            case=step_case,
+            model=model,
+            client=client,
+            retrieved_rules=retrieved_rules,
+            trial_index=trial_index,
+            temperature=temperature,
+            num_ctx=num_ctx,
+            seed=step_seed,
+            lane=lane,
+            expose_candidate_metadata=expose_candidate_metadata,
+        )
+        execution = dict(result.get("execution") or {})
+        events = [str(item) for item in list(execution.get("state_events") or [])]
+        final_quantity = int(execution.get("final_quantity") if execution.get("final_quantity") is not None else current)
+        step = {
+            "step_index": step_index,
+            "seed": step_seed,
+            "result": result,
+            "current_before": current,
+            "current_after": final_quantity,
+            "events": events,
+        }
+        steps.append(step)
+        terminal = result
+        if result.get("parse_failure") or execution.get("boundary_violation") or execution.get("wrong_target"):
+            break
+        if result.get("success"):
+            break
+        made_quantity_progress = any(event.startswith("quantity_") for event in events) and final_quantity != current
+        if made_quantity_progress:
+            current = final_quantity
+            if current == requested:
+                terminal = {
+                    **result,
+                    "success": True,
+                    "execution": {
+                        **execution,
+                        "success": True,
+                        "outcome": "quantity_grounded",
+                        "failure_type": "",
+                        "verifier_failures": [],
+                        "final_quantity": current,
+                    },
+                    "verifier_failure": False,
+                }
+                break
+            continue
+        break
+    if terminal is None:
+        terminal = {
+            "success": False,
+            "parse_failure": False,
+            "wrong_target": False,
+            "boundary_violation": False,
+            "verifier_failure": True,
+            "latency_ms": 0,
+            "request_attempted": False,
+            "response_received": False,
+            "response_parsed": False,
+            "action_executed": False,
+            "trace": {},
+            "execution": {"failure_type": "no_steps", "final_quantity": current},
+        }
+    trace = dict(terminal.get("trace") or {})
+    metadata = dict(trace.get("metadata") or {})
+    metadata["episode_steps"] = [
+        {
+            "step_index": step["step_index"],
+            "seed": step["seed"],
+            "current_before": step["current_before"],
+            "current_after": step["current_after"],
+            "events": step["events"],
+            "success": bool(step["result"].get("success")),
+            "request_attempted": bool(step["result"].get("request_attempted")),
+            "response_received": bool(step["result"].get("response_received")),
+            "response_parsed": bool(step["result"].get("response_parsed")),
+            "action_executed": bool(step["result"].get("action_executed")),
+            "model_request_hash": dict(dict(step["result"].get("trace") or {}).get("metadata") or {}).get("model_request_hash", ""),
+        }
+        for step in steps
+    ]
+    metadata["episode_step_count"] = len(steps)
+    if steps:
+        first_metadata = dict(dict(steps[0]["result"].get("trace") or {}).get("metadata") or {})
+        metadata["initial_model_request_payload"] = first_metadata.get("model_request_payload") or {}
+        metadata["initial_model_request_hash"] = first_metadata.get("model_request_hash", "")
+    trace["metadata"] = metadata
+    return {
+        **terminal,
+        "trace": trace,
+        "execution": terminal.get("execution", {}),
+        "latency_ms": sum(int(step["result"].get("latency_ms") or 0) for step in steps),
+        "request_attempted": all(bool(step["result"].get("request_attempted")) for step in steps) if steps else False,
+        "response_received": all(bool(step["result"].get("response_received")) for step in steps) if steps else False,
+        "response_parsed": all(bool(step["result"].get("response_parsed")) for step in steps) if steps else False,
+        "action_executed": all(bool(step["result"].get("action_executed")) for step in steps) if steps else False,
+        "student_request_made": all(bool(step["result"].get("response_received")) for step in steps) if steps else False,
+        "episode_steps": metadata["episode_steps"],
     }
 
 
@@ -1015,7 +1295,84 @@ def _lane_metrics(rows: list[dict[str, Any]], lane: str) -> dict[str, Any]:
         f"{prefix}wrong_target_count": sum(1 for row in relevant if row.get("wrong_target")),
         f"{prefix}verifier_failure_count": sum(1 for row in relevant if row.get("verifier_failure")),
         f"{prefix}boundary_violation_count": sum(1 for row in relevant if row.get("boundary_violation")),
+        f"{prefix}request_attempt_count": sum(1 for row in relevant if row.get("request_attempted")),
+        f"{prefix}response_received_count": sum(1 for row in relevant if row.get("response_received")),
+        f"{prefix}response_parsed_count": sum(1 for row in relevant if row.get("response_parsed")),
+        f"{prefix}action_executed_count": sum(1 for row in relevant if row.get("action_executed")),
         f"{prefix}avg_latency_ms": round(sum(latencies) / len(latencies), 2) if latencies else 0.0,
+    }
+
+
+def _raw_bank_payloads_differ_only_by_bank_packet(raw_payload: dict[str, Any], bank_payload: dict[str, Any]) -> bool:
+    def _without_bank(payload: dict[str, Any]) -> dict[str, Any]:
+        data = json.loads(json.dumps(payload, sort_keys=True, default=str))
+        try:
+            user = json.loads(data["messages"][1]["content"])
+            user["bank_packet"] = []
+            user["bank_lane"] = LANE_RAW
+            data["messages"][1]["content"] = json.dumps(user, indent=2, sort_keys=True)
+        except Exception:
+            return data
+        return data
+
+    return _without_bank(raw_payload) == _without_bank(bank_payload)
+
+
+def _paired_discordance(rows: list[dict[str, Any]], lane: str) -> dict[str, Any]:
+    pairs: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
+    for row in rows:
+        case = dict(row.get("case") or {})
+        trace = dict(row.get("trace") or {})
+        metadata = dict(trace.get("metadata") or {})
+        key = (str(case.get("case_id") or ""), int(metadata.get("trial_index") or 0))
+        pairs.setdefault(key, {})[str(row.get("lane") or "")] = row
+    raw_only = 0
+    lane_only = 0
+    both_success = 0
+    both_fail = 0
+    comparable = 0
+    bank_packet_only = True
+    for pair in pairs.values():
+        raw = pair.get(LANE_RAW)
+        other = pair.get(lane)
+        if raw is None or other is None:
+            continue
+        comparable += 1
+        raw_success = bool(raw.get("success"))
+        other_success = bool(other.get("success"))
+        if raw_success and other_success:
+            both_success += 1
+        elif raw_success and not other_success:
+            raw_only += 1
+        elif other_success and not raw_success:
+            lane_only += 1
+        else:
+            both_fail += 1
+        raw_metadata = dict(dict(raw.get("trace") or {}).get("metadata") or {})
+        other_metadata = dict(dict(other.get("trace") or {}).get("metadata") or {})
+        raw_payload = raw_metadata.get("initial_model_request_payload") or raw_metadata.get("model_request_payload") or {}
+        other_payload = other_metadata.get("initial_model_request_payload") or other_metadata.get("model_request_payload") or {}
+        if not _raw_bank_payloads_differ_only_by_bank_packet(raw_payload, other_payload):
+            bank_packet_only = False
+    total_discordant = raw_only + lane_only
+    sign_test_p_value = 1.0
+    if total_discordant:
+        wins = min(raw_only, lane_only)
+        # Two-sided exact binomial sign test under p=0.5.
+        from math import comb
+
+        tail = sum(comb(total_discordant, k) for k in range(wins + 1)) / (2**total_discordant)
+        sign_test_p_value = round(min(1.0, 2 * tail), 6)
+    return {
+        "lane": lane,
+        "paired_count": comparable,
+        "both_success": both_success,
+        "both_fail": both_fail,
+        "raw_only_success": raw_only,
+        "lane_only_success": lane_only,
+        "discordant_count": total_discordant,
+        "sign_test_p_value": sign_test_p_value,
+        "bank_packet_only_difference": bank_packet_only,
     }
 
 
@@ -1031,61 +1388,108 @@ def run_quantity_model_authentic_replay(
     seed_base: int | None = None,
     teacher_call_count: int = 0,
     candidate_rule_from_nvidia_response: bool = False,
+    lanes: tuple[str, ...] | None = AUTHENTIC_ABLATION_LANES,
+    expose_candidate_metadata: bool = True,
+    required_teacher_response_hash: str = "",
+    max_steps: int = 1,
 ) -> dict[str, Any]:
     all_cases = cases or default_quantity_replay_cases()
     holdouts = [case for case in all_cases if case.split == "holdout"]
     rows: list[dict[str, Any]] = []
+    active_lanes = tuple(lane for lane in (lanes or AUTHENTIC_ABLATION_LANES) if lane in AUTHENTIC_ABLATION_LANES) or AUTHENTIC_ABLATION_LANES
+    if LANE_RAW not in active_lanes:
+        active_lanes = (LANE_RAW, *active_lanes)
     for case in holdouts:
-        retrieved = retrieve_quantity_rules(ledger=ledger, snapshot=case.snapshot())
         for trial_index in range(max(int(trials), 1)):
             seed = None if seed_base is None else int(seed_base) + trial_index
-            raw = run_quantity_model_student_lane(
-                case=case,
-                model=student_model,
-                client=student_client,
-                retrieved_rules=[],
-                trial_index=trial_index,
-                temperature=temperature,
-                num_ctx=num_ctx,
-                seed=seed,
-            )
-            bank = run_quantity_model_student_lane(
-                case=case,
-                model=student_model,
-                client=student_client,
-                retrieved_rules=retrieved,
-                trial_index=trial_index,
-                temperature=temperature,
-                num_ctx=num_ctx,
-                seed=seed,
-            )
-            rows.append({"lane": "raw", "case": case.to_dict(), "retrieved_rules": [], **raw})
-            rows.append({"lane": "bank", "case": case.to_dict(), "retrieved_rules": retrieved, **bank})
-    raw_metrics = _lane_metrics(rows, "raw")
-    bank_metrics = _lane_metrics(rows, "bank")
-    student_request_count = sum(1 for row in rows if row.get("student_request_made"))
-    expected_student_requests = len(holdouts) * max(int(trials), 1) * 2
+            for lane in active_lanes:
+                retrieved = [] if lane == LANE_RAW else retrieve_quantity_rules(
+                    ledger=ledger,
+                    snapshot=case.snapshot(),
+                    policy_kind=lane,
+                    require_provenance_hash=required_teacher_response_hash,
+                )
+                result = run_quantity_model_episode_lane(
+                    case=case,
+                    model=student_model,
+                    client=student_client,
+                    retrieved_rules=retrieved,
+                    trial_index=trial_index,
+                    temperature=temperature,
+                    num_ctx=num_ctx,
+                    seed=seed,
+                    lane=lane,
+                    expose_candidate_metadata=expose_candidate_metadata,
+                    max_steps=max_steps,
+                )
+                rows.append({"lane": lane, "case": case.to_dict(), "retrieved_rules": retrieved, **result})
+    lane_metrics = {lane: _lane_metrics(rows, lane) for lane in active_lanes}
+    raw_metrics = lane_metrics.get(LANE_RAW, _lane_metrics(rows, LANE_RAW))
+    bank_metrics = lane_metrics.get(LANE_FULL_RULE, _lane_metrics(rows, LANE_FULL_RULE))
+    paired = [_paired_discordance(rows, lane) for lane in active_lanes if lane != LANE_RAW]
+    def _episode_count(row: dict[str, Any], field: str) -> int:
+        steps = list(row.get("episode_steps") or [])
+        if steps:
+            return sum(1 for step in steps if step.get(field))
+        return 1 if row.get(field) else 0
+
+    student_request_count = sum(_episode_count(row, "response_received") for row in rows)
+    attempted_count = sum(_episode_count(row, "request_attempted") for row in rows)
+    parsed_count = sum(_episode_count(row, "response_parsed") for row in rows)
+    executed_count = sum(_episode_count(row, "action_executed") for row in rows)
+    expected_student_requests = attempted_count
+    bank_packet_only = all(item.get("bank_packet_only_difference") for item in paired)
+    all_provider_metadata = all(
+        bool(dict(dict(row.get("trace") or {}).get("metadata") or {}).get("request_metadata"))
+        for row in rows
+        if row.get("response_received")
+    )
+    retrieved_rule_ids: list[str] = []
+    retrieved_hash_mismatches = 0
+    for row in rows:
+        for rule in list(row.get("retrieved_rules") or []):
+            retrieved_rule_ids.append(str(rule.get("rule_id") or ""))
+            if required_teacher_response_hash:
+                metadata = dict(rule.get("metadata") or {})
+                if str(metadata.get("raw_teacher_response_hash") or "") != required_teacher_response_hash:
+                    retrieved_hash_mismatches += 1
     audit = {
         "legacy_replay_was_deterministic_policy": True,
         "model_authentic_replay_enabled": True,
+        "student_lanes_attempted_requests": attempted_count == expected_student_requests,
+        "student_lanes_received_responses": student_request_count == expected_student_requests,
         "student_lanes_made_real_requests": student_request_count == expected_student_requests,
-        "student_request_count": student_request_count,
+        "student_lanes_parsed_responses": parsed_count == expected_student_requests,
+        "student_lanes_executed_actions": executed_count == expected_student_requests,
+        "student_request_attempt_count": attempted_count,
+        "student_response_received_count": student_request_count,
+        "student_response_parsed_count": parsed_count,
+        "student_action_executed_count": executed_count,
         "expected_student_request_count": expected_student_requests,
         "teacher_free_student_lanes": True,
         "external_teacher_requests_in_student_lanes": 0,
         "candidate_rule_from_nvidia_response": bool(candidate_rule_from_nvidia_response),
         "hardcoded_policy_selected_student_actions": False,
-        "bank_packet_only_intentional_difference": True,
+        "bank_packet_only_intentional_difference": bank_packet_only,
         "state_machine_scored_resulting_state": True,
         "holdouts_frozen_before_teacher": True,
+        "provider_response_metadata_present": all_provider_metadata,
+        "candidate_metadata_visible": bool(expose_candidate_metadata),
+        "retrieved_rule_ids": sorted(set(retrieved_rule_ids)),
+        "retrieved_rule_provenance_hash_mismatch_count": retrieved_hash_mismatches,
     }
     raw_success = int(raw_metrics["raw_success_count"])
-    bank_success = int(bank_metrics["bank_success_count"])
+    bank_success = int(bank_metrics[f"{LANE_FULL_RULE}_success_count"])
+    flattened_metrics: dict[str, Any] = {}
+    for metrics in lane_metrics.values():
+        flattened_metrics.update(metrics)
     return {
         "generated_ts": int(time.time()),
         "replay_id": f"{QUANTITY_REPLAY_ID}_model_authentic",
         "student_model": student_model,
         "trial_count_per_holdout": max(int(trials), 1),
+        "max_steps": max(int(max_steps), 1),
+        "lanes": list(active_lanes),
         "holdout_case_count": len(holdouts),
         "case_count": len(holdouts),
         "raw_success_count": raw_success,
@@ -1094,14 +1498,16 @@ def run_quantity_model_authentic_replay(
         "teacher_calls": int(teacher_call_count),
         "teacher_calls_in_student_lanes": 0,
         "authenticity_audit": audit,
+        "lane_metrics": lane_metrics,
+        "paired_discordance": paired,
         "rows": rows,
         "ledger_summary": ledger.summarize(),
-        **raw_metrics,
-        **bank_metrics,
+        **flattened_metrics,
     }
 
 
 def render_quantity_replay_markdown(report: dict[str, Any]) -> str:
+    full_prefix = LANE_FULL_RULE
     lines = [
         "# Agency Quantity Replay",
         "",
@@ -1110,7 +1516,7 @@ def render_quantity_replay_markdown(report: dict[str, Any]) -> str:
         f"- Holdout cases: {report.get('holdout_case_count', report.get('case_count', 0))}",
         f"- Trials per holdout: {report.get('trial_count_per_holdout', 1)}",
         f"- Raw successes: {report.get('raw_success_count', 0)}",
-        f"- Bank-assisted successes: {report.get('bank_success_count', 0)}",
+        f"- Full-rule bank successes: {report.get('bank_success_count', 0)}",
         f"- Improvement: {report.get('improvement_count', 0)}",
         f"- Teacher calls: {report.get('teacher_calls', 0)}",
         f"- Teacher calls in student lanes: {report.get('teacher_calls_in_student_lanes', 0)}",
@@ -1131,23 +1537,75 @@ def render_quantity_replay_markdown(report: dict[str, Any]) -> str:
             "## Failure Metrics",
             "",
             f"- Raw parse failures: {report.get('raw_parse_failure_count', 0)}",
-            f"- Bank parse failures: {report.get('bank_parse_failure_count', 0)}",
+            f"- Full-rule parse failures: {report.get(f'{full_prefix}_parse_failure_count', 0)}",
             f"- Raw wrong-target actions: {report.get('raw_wrong_target_count', 0)}",
-            f"- Bank wrong-target actions: {report.get('bank_wrong_target_count', 0)}",
+            f"- Full-rule wrong-target actions: {report.get(f'{full_prefix}_wrong_target_count', 0)}",
             f"- Raw verifier failures: {report.get('raw_verifier_failure_count', 0)}",
-            f"- Bank verifier failures: {report.get('bank_verifier_failure_count', 0)}",
+            f"- Full-rule verifier failures: {report.get(f'{full_prefix}_verifier_failure_count', 0)}",
             f"- Raw boundary violations: {report.get('raw_boundary_violation_count', 0)}",
-            f"- Bank boundary violations: {report.get('bank_boundary_violation_count', 0)}",
+            f"- Full-rule boundary violations: {report.get(f'{full_prefix}_boundary_violation_count', 0)}",
             f"- Raw avg latency ms: {report.get('raw_avg_latency_ms', 0)}",
-            f"- Bank avg latency ms: {report.get('bank_avg_latency_ms', 0)}",
+            f"- Full-rule avg latency ms: {report.get(f'{full_prefix}_avg_latency_ms', 0)}",
             "",
         ]
     )
+    lane_metrics = dict(report.get("lane_metrics") or {})
+    if lane_metrics:
+        lines.extend(
+            [
+                "## Ablation Metrics",
+                "",
+                "| Lane | Success | Parse Fail | Wrong Target | Verifier Fail | Boundary |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for lane, metrics in lane_metrics.items():
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        str(lane),
+                        str(metrics.get(f"{lane}_success_count", 0)),
+                        str(metrics.get(f"{lane}_parse_failure_count", 0)),
+                        str(metrics.get(f"{lane}_wrong_target_count", 0)),
+                        str(metrics.get(f"{lane}_verifier_failure_count", 0)),
+                        str(metrics.get(f"{lane}_boundary_violation_count", 0)),
+                    ]
+                )
+                + " |"
+            )
+        lines.append("")
+    paired = list(report.get("paired_discordance") or [])
+    if paired:
+        lines.extend(
+            [
+                "## Paired Discordance",
+                "",
+                "| Lane | Pairs | Raw Only | Lane Only | Discordant | Sign Test p |",
+                "| --- | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for item in paired:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        str(item.get("lane") or ""),
+                        str(item.get("paired_count", 0)),
+                        str(item.get("raw_only_success", 0)),
+                        str(item.get("lane_only_success", 0)),
+                        str(item.get("discordant_count", 0)),
+                        str(item.get("sign_test_p_value", 1.0)),
+                    ]
+                )
+                + " |"
+            )
+        lines.append("")
     lines.extend(
         [
         "## Holdout Results",
         "",
-        "| Case | Raw | Bank | Bank Action | Retrieved |",
+        "| Case | Raw | Full Rule | Full-Rule Action | Retrieved |",
         "| --- | --- | --- | --- | --- |",
         ]
     )
@@ -1162,7 +1620,7 @@ def render_quantity_replay_markdown(report: dict[str, Any]) -> str:
             grouped.setdefault(key, {})[str(row.get("lane") or "")] = row
         for (case_id, trial_index), pair in sorted(grouped.items()):
             raw_row = dict(pair.get("raw") or {})
-            bank_row = dict(pair.get("bank") or {})
+            bank_row = dict(pair.get(LANE_FULL_RULE) or {})
             bank_trace = dict(bank_row.get("trace") or {})
             action = dict(bank_trace.get("action") or {})
             retrieved = [str(rule.get("rule_id") or "") for rule in list(bank_row.get("retrieved_rules") or [])]
@@ -1212,3 +1670,78 @@ def write_quantity_replay_report(*, report: dict[str, Any], out_dir: str | Path)
     report_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     markdown_path.write_text(render_quantity_replay_markdown(report), encoding="utf-8")
     return {"report_json": str(report_path), "report_markdown": str(markdown_path)}
+
+
+def sanitized_quantity_proof_report(report: dict[str, Any]) -> dict[str, Any]:
+    rows: list[dict[str, Any]] = []
+    for row in list(report.get("rows") or []):
+        trace = dict(row.get("trace") or {})
+        metadata = dict(trace.get("metadata") or {})
+        execution = dict(metadata.get("execution") or {})
+        rows.append(
+            {
+                "lane": row.get("lane", ""),
+                "case_id": dict(row.get("case") or {}).get("case_id", ""),
+                "trial_index": metadata.get("trial_index", 0),
+                "seed": metadata.get("seed"),
+                "success": bool(row.get("success")),
+                "failure_type": execution.get("failure_type", ""),
+                "final_quantity": execution.get("final_quantity"),
+                "request_attempted": bool(row.get("request_attempted")),
+                "response_received": bool(row.get("response_received")),
+                "response_parsed": bool(row.get("response_parsed")),
+                "action_executed": bool(row.get("action_executed")),
+                "student_response_hash": metadata.get("student_response_hash", ""),
+                "model_request_hash": metadata.get("model_request_hash", ""),
+                "retrieved_rule_ids": list(metadata.get("retrieved_rule_ids") or []),
+            }
+        )
+    return {
+        "replay_id": report.get("replay_id", ""),
+        "generated_ts": report.get("generated_ts", 0),
+        "student_model": report.get("student_model", ""),
+        "trial_count_per_holdout": report.get("trial_count_per_holdout", 0),
+        "lanes": list(report.get("lanes") or []),
+        "raw_success_count": report.get("raw_success_count", 0),
+        "full_rule_success_count": report.get("bank_success_count", 0),
+        "improvement_count": report.get("improvement_count", 0),
+        "teacher_calls": report.get("teacher_calls", 0),
+        "teacher_calls_in_student_lanes": report.get("teacher_calls_in_student_lanes", 0),
+        "authenticity_audit": dict(report.get("authenticity_audit") or {}),
+        "lane_metrics": dict(report.get("lane_metrics") or {}),
+        "paired_discordance": list(report.get("paired_discordance") or []),
+        "ledger_summary": dict(report.get("ledger_summary") or {}),
+        "sanitized_rows": rows,
+    }
+
+
+def write_sanitized_quantity_proof(*, report: dict[str, Any], out_dir: str | Path = "proof") -> dict[str, str]:
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    proof = sanitized_quantity_proof_report(report)
+    json_path = root / "agency_quantity_authentic_replay.json"
+    md_path = root / "agency_quantity_authentic_replay.md"
+    json_path.write_text(json.dumps(proof, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    md_lines = [
+        "# Agency Quantity Authentic Replay",
+        "",
+        f"- Student model: `{proof.get('student_model', '')}`",
+        f"- Trials per holdout: {proof.get('trial_count_per_holdout', 0)}",
+        f"- Raw successes: {proof.get('raw_success_count', 0)}",
+        f"- Full-rule successes: {proof.get('full_rule_success_count', 0)}",
+        f"- Delta: {proof.get('improvement_count', 0)}",
+        f"- Teacher calls: {proof.get('teacher_calls', 0)}",
+        "",
+        "## Authenticity",
+        "",
+    ]
+    for key, value in sorted(dict(proof.get("authenticity_audit") or {}).items()):
+        md_lines.append(f"- {key}: `{value}`")
+    md_lines.extend(["", "## Paired Discordance", "", "| Lane | Raw Only | Lane Only | p |", "| --- | ---: | ---: | ---: |"])
+    for item in list(proof.get("paired_discordance") or []):
+        md_lines.append(
+            f"| {item.get('lane', '')} | {item.get('raw_only_success', 0)} | "
+            f"{item.get('lane_only_success', 0)} | {item.get('sign_test_p_value', 1.0)} |"
+        )
+    md_path.write_text("\n".join(md_lines) + "\n", encoding="utf-8")
+    return {"proof_json": str(json_path), "proof_markdown": str(md_path)}

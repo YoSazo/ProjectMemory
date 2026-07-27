@@ -106,6 +106,33 @@ def test_github_models_uses_expected_endpoint_and_headers(monkeypatch):
     assert headers["X-GitHub-Api-Version"] == "2022-11-28"
 
 
+def test_ollama_chat_passes_seed_in_options(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_post(url, *, json, timeout, headers):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        captured["headers"] = headers
+        return _DummyResponse(200, {"message": {"content": '{"ok": true}'}})
+
+    monkeypatch.setattr("memory_system.ollama_client.requests.post", fake_post)
+
+    client = UniversalLLMClient(provider="ollama", base_url="http://127.0.0.1:11435")
+    response = client.chat_response(
+        model="mistral:7b-instruct",
+        messages=[ChatMessage(role="user", content="hello")],
+        temperature=0.1,
+        num_ctx=4096,
+        seed=1234,
+    )
+
+    assert response.content == '{"ok": true}'
+    assert response.request_metadata == {"provider": "ollama", "model": "mistral:7b-instruct", "seed": 1234}
+    assert captured["url"] == "http://127.0.0.1:11435/api/chat"
+    assert captured["json"]["options"] == {"temperature": 0.1, "num_ctx": 4096, "seed": 1234}
+
+
 def test_github_models_retries_without_temperature_when_model_rejects_it(monkeypatch):
     calls: list[dict[str, object]] = []
     responses = [
