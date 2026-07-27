@@ -1,4 +1,4 @@
-from memory_system.action_capsules import create_action_capsule
+from memory_system.action_capsules import action_capsule_to_dict, create_action_capsule
 from memory_system.action_ontology import create_action_draft, classify_action_prompt, summarize_action_ontology
 
 
@@ -120,10 +120,52 @@ def test_action_capsule_v1_extracts_size_toppings_and_add_ons_from_food_prompt()
     assert capsule.order_spec.restaurant.confidence >= 0.95
     assert capsule.order_spec.item.values == ["cheese pizza"]
     assert capsule.order_spec.size.values == ["Large"]
+    assert capsule.order_spec.quantity.values == []
     assert capsule.order_spec.toppings.values == ["chicken", "pineapple"]
     assert capsule.order_spec.add_ons.values == ["coke"]
     assert capsule.order_spec.clarification_blockers == []
     assert "Domino%27s%20cheese%20pizza" in capsule.bridge_options[0].url
+
+
+def test_action_capsule_v2_extracts_quantity_words_as_first_class_order_spec():
+    capsule = create_action_capsule("DoorDash me two large cheese pizzas from Dominos and stop before payment.")
+
+    assert capsule.action_id == "food_order_quote"
+    assert capsule.slots["service"] == "DoorDash"
+    assert capsule.slots["restaurant"] == "Dominos"
+    assert capsule.slots["item"] == "cheese pizza"
+    assert capsule.slots["size"] == "Large"
+    assert capsule.slots["quantity"] == "2"
+    assert capsule.order_spec is not None
+    assert capsule.order_spec.quantity.values == ["2"]
+    assert capsule.order_spec.quantity.criticality == "required"
+    assert capsule.order_spec.quantity.source == "explicit_quantity:two"
+    assert "quantity_match" in capsule.verifier_requirements
+    assert "quantity_verification_required" in capsule.residual_constraints
+
+    payload = action_capsule_to_dict(capsule)
+    assert payload["slots"]["quantity"] == "2"
+    assert payload["order_spec"]["quantity"]["values"] == ["2"]
+
+
+def test_action_capsule_v2_extracts_digit_quantity_without_confusing_tip():
+    capsule = create_action_capsule("DoorDash 2 large cheese pizzas from Domino's and tip the dasher $6")
+
+    assert capsule.slots["quantity"] == "2"
+    assert capsule.slots["tip"] == "$6"
+    assert capsule.slots["item"] == "cheese pizza"
+    assert capsule.order_spec is not None
+    assert capsule.order_spec.quantity.values == ["2"]
+    assert capsule.order_spec.tip.values == ["$6"]
+
+
+def test_action_capsule_v2_extracts_pair_quantity():
+    capsule = create_action_capsule("DoorDash a pair of large cheese pizzas from Domino's")
+
+    assert capsule.slots["quantity"] == "2"
+    assert capsule.slots["item"] == "cheese pizza"
+    assert capsule.order_spec is not None
+    assert capsule.order_spec.quantity.source == "explicit_quantity:pair"
 
 
 def test_action_capsule_v1_blocks_food_bridge_when_critical_order_fields_are_missing():

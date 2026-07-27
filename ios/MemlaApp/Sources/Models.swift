@@ -399,6 +399,7 @@ struct OrderSpec: Codable {
     let restaurant: OrderSpecField
     let item: OrderSpecField
     let size: OrderSpecField
+    let quantity: OrderSpecField
     let toppings: OrderSpecField
     let addOns: OrderSpecField
     let tip: OrderSpecField
@@ -410,6 +411,7 @@ struct OrderSpec: Codable {
         case restaurant
         case item
         case size
+        case quantity
         case toppings
         case addOns = "add_ons"
         case tip

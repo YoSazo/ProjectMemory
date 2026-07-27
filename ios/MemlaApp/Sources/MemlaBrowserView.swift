@@ -1367,6 +1367,7 @@ final class MemlaBrowserModel: NSObject, ObservableObject, WKNavigationDelegate 
         verifySlot("restaurant")
         verifySlot("item")
         verifySlot("size")
+        verifySlot("quantity")
         verifySlot("modifiers")
         verifySlot("toppings")
         verifySlot("add_ons", label: "add ons")
@@ -4502,6 +4503,7 @@ struct MemlaBrowserView: View {
             "restaurant",
             "item",
             "size",
+            "quantity",
             "toppings",
             "add_ons",
             "modifiers",
@@ -4529,6 +4531,8 @@ struct MemlaBrowserView: View {
             return "Add Ons"
         case "pickup_time":
             return "Pickup Time"
+        case "quantity":
+            return "Quantity"
         default:
             return key.replacingOccurrences(of: "_", with: " ").capitalized
         }
@@ -4545,6 +4549,9 @@ struct MemlaBrowserView: View {
             } else {
                 parts.append(item)
             }
+        }
+        if let quantity = capsule.slots["quantity"], !quantity.isEmpty {
+            parts.append("Qty: \(quantity)")
         }
         if let toppings = capsule.slots["toppings"], !toppings.isEmpty {
             parts.append("Toppings: \(toppings)")

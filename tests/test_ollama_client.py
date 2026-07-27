@@ -255,6 +255,77 @@ def test_gemini_from_env_uses_gemini_key_fallback(monkeypatch):
     assert client.api_key == "gem-env-key"
 
 
+def test_nvidia_from_env_uses_nvidia_key_and_base_url(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "nvidia")
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-env-key")
+
+    client = UniversalLLMClient.from_env()
+
+    assert client.provider == "nvidia"
+    assert client.base_url == "https://integrate.api.nvidia.com"
+    assert client.api_key == "nvapi-env-key"
+
+
+def test_nvidia_chat_response_sends_reasoning_and_captures_reasoning_content(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_post(url, *, json, timeout, headers):
+        captured["url"] = url
+        captured["json"] = json
+        captured["headers"] = headers
+        return _DummyResponse(
+            200,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "{\"ok\": true}",
+                            "reasoning_content": "visible count evidence is required",
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20},
+            },
+        )
+
+    monkeypatch.setattr("memory_system.ollama_client.requests.post", fake_post)
+
+    client = UniversalLLMClient(
+        provider="nvidia_nim",
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key="nvapi-test",
+    )
+    response = client.chat_response(
+        model="deepseek-ai/deepseek-v4-flash",
+        messages=[ChatMessage(role="user", content="emit json")],
+        temperature=0.1,
+        max_tokens=2048,
+        reasoning_effort="high",
+    )
+
+    assert client.provider == "nvidia"
+    assert client.base_url == "https://integrate.api.nvidia.com"
+    assert response.content == "{\"ok\": true}"
+    assert response.reasoning_content == "visible count evidence is required"
+    assert response.usage == {"prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20}
+    assert captured["url"] == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert captured["json"] == {
+        "model": "deepseek-ai/deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "emit json"}],
+        "temperature": 0.1,
+        "max_tokens": 2048,
+        "chat_template_kwargs": {
+            "thinking": True,
+            "reasoning_effort": "high",
+        },
+    }
+    headers = captured["headers"]
+    assert isinstance(headers, dict)
+    assert headers["Authorization"] == "Bearer nvapi-test"
+
+
 def test_gemini_http_error_includes_response_body(monkeypatch):
     calls: list[int] = []
 
@@ -307,3 +378,13 @@ def test_github_models_normalizes_base_url_without_inference_suffix():
 
     assert client.provider == "github_models"
     assert client.base_url == "https://models.github.ai/inference"
+
+
+def test_openai_compatible_normalizes_v1_base_url():
+    client = UniversalLLMClient(
+        provider="openai",
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key="test-key",
+    )
+
+    assert client.base_url == "https://integrate.api.nvidia.com"

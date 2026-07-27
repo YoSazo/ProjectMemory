@@ -1083,10 +1083,13 @@ def run_agency_automation(
     known_evidence: list[str] | None = None,
     missing_evidence: list[str] | None = None,
     failed_actions: list[str] | None = None,
+    teacher_provider: str = "",
     teacher_model: str = DEFAULT_AGENCY_AUTOMATION_TEACHER_MODEL,
     teacher_client: UniversalLLMClient | None = None,
     temperature: float = 0.1,
     num_ctx: int | None = None,
+    teacher_max_tokens: int | None = None,
+    teacher_reasoning_effort: str = "",
     dry_run: bool = False,
     ledger: GlobalTransmutationLedger | None = None,
 ) -> dict[str, Any]:
@@ -1107,6 +1110,9 @@ def run_agency_automation(
     messages = build_teacher_messages(plan=plan, confusion=signal)
 
     raw_response = ""
+    raw_reasoning_content = ""
+    teacher_usage: dict[str, Any] = {}
+    teacher_request_metadata: dict[str, Any] = {}
     teacher_parse_mode = "skipped_dry_run"
     compressed: list[CompressedTransmutation] = []
     failures: list[dict[str, Any]] = []
@@ -1114,12 +1120,26 @@ def run_agency_automation(
         if teacher_client is None:
             raise RuntimeError("teacher_client is required unless dry_run=True.")
         try:
-            raw_response = teacher_client.chat(
-                model=teacher_model,
-                messages=messages,
-                temperature=temperature,
-                num_ctx=num_ctx,
-            )
+            if hasattr(teacher_client, "chat_response"):
+                response = teacher_client.chat_response(
+                    model=teacher_model,
+                    messages=messages,
+                    temperature=temperature,
+                    num_ctx=num_ctx,
+                    max_tokens=teacher_max_tokens,
+                    reasoning_effort=teacher_reasoning_effort or None,
+                )
+                raw_response = response.content
+                raw_reasoning_content = response.reasoning_content
+                teacher_usage = dict(response.usage or {})
+                teacher_request_metadata = dict(response.request_metadata or {})
+            else:
+                raw_response = teacher_client.chat(
+                    model=teacher_model,
+                    messages=messages,
+                    temperature=temperature,
+                    num_ctx=num_ctx,
+                )
             _, teacher_parse_mode = _recover_json_object(raw_response)
             compressed = compress_teacher_response(
                 raw_response=raw_response,
@@ -1146,8 +1166,13 @@ def run_agency_automation(
         "automation_id": AGENCY_AUTOMATION_ID,
         "generated_ts": int(time.time()),
         "teacher_model": teacher_model,
+        "teacher_provider": teacher_provider or (getattr(teacher_client, "provider", "") if teacher_client is not None else ""),
         "teacher_call_status": "skipped_dry_run" if dry_run else ("failed" if failures else "completed"),
         "teacher_parse_mode": teacher_parse_mode,
+        "teacher_reasoning_effort": teacher_reasoning_effort,
+        "teacher_max_tokens": teacher_max_tokens,
+        "teacher_usage": teacher_usage,
+        "teacher_request_metadata": teacher_request_metadata,
         "prompt": _clean(prompt),
         "observation": _clean(observation),
         "constraint_count": len(constraints),
@@ -1157,6 +1182,7 @@ def run_agency_automation(
         "micro_fortress": plan.to_dict(),
         "teacher_messages": [{"role": message.role, "content": message.content} for message in messages],
         "raw_teacher_response": raw_response,
+        "raw_teacher_reasoning_content": raw_reasoning_content,
         "compressed_transmutations": [item.to_dict() for item in compressed],
         "compressed_transmutation_count": len(compressed),
         "ledger": working_ledger.to_dict(),
@@ -1178,7 +1204,10 @@ def render_agency_automation_markdown(report: dict[str, Any]) -> str:
         "",
         f"- Automation: `{report.get('automation_id', AGENCY_AUTOMATION_ID)}`",
         f"- Teacher status: `{report.get('teacher_call_status', '')}`",
+        f"- Teacher provider: `{report.get('teacher_provider', '')}`",
         f"- Teacher model: `{report.get('teacher_model', '')}`",
+        f"- Teacher reasoning effort: `{report.get('teacher_reasoning_effort', '')}`",
+        f"- Teacher max tokens: `{report.get('teacher_max_tokens', '')}`",
         f"- Constraint count: `{report.get('constraint_count', 0)}`",
         f"- Ungrounded constraints: `{report.get('ungrounded_constraint_count', 0)}`",
         f"- Confusion type: `{confusion.get('uncertainty_type', '')}`",

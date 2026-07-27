@@ -135,9 +135,23 @@ from .fortresses.agency_automation import (
     run_agency_automation,
     write_agency_automation_artifacts,
 )
+from .fortresses.agency_quantity_replay import (
+    DEFAULT_AGENCY_LEDGER_PATH,
+    extract_live_quantity_teacher_rule,
+    quantity_transmutation_to_ledger_entry,
+    run_quantity_model_authentic_replay,
+    run_quantity_replay_proof,
+    seed_quantity_teacher_transmutation,
+    write_quantity_manifests,
+    write_quantity_replay_report,
+)
 from .fortresses.meta_fortress import GlobalTransmutationLedger
 from .ollama_client import UniversalLLMClient
 from .terminal_workbench import serve_terminal_workbench
+
+
+DEFAULT_NVIDIA_NIM_MODEL = "deepseek-ai/deepseek-v4-flash"
+DEFAULT_NVIDIA_NIM_BASE_URL = "https://integrate.api.nvidia.com"
 
 
 def _coding_model_default() -> str:
@@ -259,6 +273,8 @@ def _build_universal_llm_client(*, provider: str = "", base_url: str = "") -> Un
         api_key = os.environ.get("GITHUB_MODELS_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if normalized_provider == "gemini" and not api_key:
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if normalized_provider == "nvidia" and not api_key:
+        api_key = os.environ.get("NVIDIA_API_KEY")
     return UniversalLLMClient(provider=normalized_provider, base_url=resolved_base_url, api_key=api_key)
 
 
@@ -777,9 +793,11 @@ def _build_agency_teacher_client(args: argparse.Namespace) -> UniversalLLMClient
         api_key = os.environ.get("GITHUB_MODELS_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if provider == "gemini" and not api_key:
         api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    if provider == "nvidia" and not api_key:
+        api_key = os.environ.get("NVIDIA_API_KEY")
     if provider != "ollama" and not api_key:
         raise SystemExit(
-            "Teacher provider requires an API key. Set GEMINI_API_KEY/LLM_API_KEY or pass --api-key. "
+            "Teacher provider requires an API key. Set NVIDIA_API_KEY, GEMINI_API_KEY, or LLM_API_KEY. "
             "Use --dry-run to build the architecture without calling a model."
         )
     return UniversalLLMClient(provider=provider, base_url=base_url, api_key=api_key)
@@ -803,10 +821,15 @@ def _handle_agency_automate(args: argparse.Namespace) -> int:
         known_evidence=args.known_evidence or [],
         missing_evidence=args.missing_evidence or [],
         failed_actions=args.failed_action or [],
+        teacher_provider=UniversalLLMClient._normalize_provider(
+            args.teacher_provider or DEFAULT_AGENCY_AUTOMATION_TEACHER_PROVIDER
+        ),
         teacher_model=args.teacher_model,
         teacher_client=teacher_client,
         temperature=args.temperature,
         num_ctx=args.num_ctx,
+        teacher_max_tokens=args.teacher_max_tokens,
+        teacher_reasoning_effort=args.teacher_reasoning_effort,
         dry_run=args.dry_run,
         ledger=ledger,
     )
@@ -817,7 +840,10 @@ def _handle_agency_automate(args: argparse.Namespace) -> int:
             {
                 "artifacts": artifacts,
                 "teacher_model": report.get("teacher_model", ""),
+                "teacher_provider": report.get("teacher_provider", ""),
                 "teacher_call_status": report.get("teacher_call_status", ""),
+                "teacher_reasoning_effort": report.get("teacher_reasoning_effort", ""),
+                "teacher_max_tokens": report.get("teacher_max_tokens", None),
                 "constraint_count": report.get("constraint_count", 0),
                 "ungrounded_constraint_count": report.get("ungrounded_constraint_count", 0),
                 "confusion_type": report.get("confusion", {}).get("uncertainty_type", ""),
@@ -843,6 +869,163 @@ def _handle_agency_automate(args: argparse.Namespace) -> int:
             f"ungrounded {report.get('ungrounded_constraint_count', 0)} | "
             f"confusion {report.get('confusion', {}).get('uncertainty_type', '')} | "
             f"compressed rules {report.get('compressed_transmutation_count', 0)}"
+        )
+    return 0
+
+
+def _handle_agency_nvidia_smoke(args: argparse.Namespace) -> int:
+    if not args.live:
+        payload = {
+            "live": False,
+            "teacher_provider": "nvidia",
+            "teacher_base_url": UniversalLLMClient._normalize_base_url("nvidia", args.teacher_base_url),
+            "teacher_model": args.teacher_model,
+            "teacher_reasoning_effort": args.teacher_reasoning_effort,
+            "teacher_max_tokens": args.teacher_max_tokens,
+            "status": "ready_dry_run_no_model_called",
+        }
+        if args.json:
+            _print_json(payload)
+        else:
+            print("NVIDIA smoke command is configured. Re-run with --live to call the endpoint.")
+            print(f"Provider: {payload['teacher_provider']}")
+            print(f"Base URL: {payload['teacher_base_url']}")
+            print(f"Model: {payload['teacher_model']}")
+            print(f"Reasoning effort: {payload['teacher_reasoning_effort']}")
+            print(f"Max tokens: {payload['teacher_max_tokens']}")
+        return 0
+
+    if not (os.environ.get("NVIDIA_API_KEY") or os.environ.get("LLM_API_KEY")):
+        raise SystemExit("Set NVIDIA_API_KEY or LLM_API_KEY before running agency nvidia-smoke --live.")
+
+    run_args = argparse.Namespace(
+        teacher_provider="nvidia",
+        teacher_base_url=args.teacher_base_url,
+        api_key="",
+        prompt=args.prompt,
+        observation=args.observation,
+        app_family=args.app_family,
+        page_kind=args.page_kind,
+        known_evidence=[],
+        missing_evidence=[],
+        failed_action=[],
+        teacher_model=args.teacher_model,
+        temperature=args.temperature,
+        num_ctx=args.num_ctx,
+        teacher_max_tokens=args.teacher_max_tokens,
+        teacher_reasoning_effort=args.teacher_reasoning_effort,
+        dry_run=False,
+        ledger="",
+        out_dir=args.out_dir,
+        json=args.json,
+    )
+    return _handle_agency_automate(run_args)
+
+
+def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
+    ledger_path = Path(args.ledger or DEFAULT_AGENCY_LEDGER_PATH).expanduser().resolve()
+    ledger = GlobalTransmutationLedger.read_json(ledger_path) if ledger_path.exists() else GlobalTransmutationLedger()
+    teacher_extraction: dict[str, Any] = {}
+    teacher_call_count = 0
+    if args.live_teacher:
+        teacher_client = UniversalLLMClient(
+            provider="nvidia",
+            base_url=args.teacher_base_url,
+            api_key=os.environ.get("NVIDIA_API_KEY") or os.environ.get("LLM_API_KEY"),
+        )
+        if not teacher_client.api_key:
+            raise SystemExit("Set NVIDIA_API_KEY or LLM_API_KEY before running quantity-replay --live-teacher.")
+        teacher_extraction = extract_live_quantity_teacher_rule(
+            teacher_client=teacher_client,
+            teacher_model=args.teacher_model,
+            temperature=args.temperature,
+            teacher_max_tokens=args.teacher_max_tokens,
+            teacher_reasoning_effort=args.teacher_reasoning_effort,
+        )
+        teacher_call_count = 1
+        raw_transmutation = teacher_extraction.get("compressed_transmutation")
+        if not isinstance(raw_transmutation, dict):
+            raise SystemExit("Live teacher call did not produce a compressed transmutation.")
+        transmutation = seed_quantity_teacher_transmutation(source_model=args.teacher_model).__class__(**raw_transmutation)
+        ledger.add_entry(
+            quantity_transmutation_to_ledger_entry(
+                transmutation,
+                app_family="doordash",
+                page_kind="dd_item_modal",
+            )
+        )
+        ledger.write_json(ledger_path)
+    elif args.seed_rule:
+        transmutation = seed_quantity_teacher_transmutation(source_model=args.teacher_model)
+        ledger.add_entry(
+            quantity_transmutation_to_ledger_entry(
+                transmutation,
+                app_family="doordash",
+                page_kind="dd_item_modal",
+            )
+        )
+        ledger.write_json(ledger_path)
+
+    if args.mode == "authentic":
+        student_base_url = args.student_base_url or UniversalLLMClient._default_base_url_from_env("ollama")
+        student_client = UniversalLLMClient(provider="ollama", base_url=student_base_url)
+        report = run_quantity_model_authentic_replay(
+            ledger=ledger,
+            student_client=student_client,
+            student_model=args.student_model,
+            trials=args.trials,
+            temperature=args.temperature,
+            num_ctx=args.num_ctx,
+            seed_base=args.seed_base,
+            teacher_call_count=teacher_call_count,
+            candidate_rule_from_nvidia_response=bool(teacher_extraction.get("compressed_transmutation")),
+        )
+    else:
+        report = run_quantity_replay_proof(ledger=ledger, student_model=args.student_model)
+    if teacher_extraction:
+        report["teacher_extraction"] = teacher_extraction
+    out_dir = Path(args.out_dir).resolve() if args.out_dir else _default_report_dir("agency_quantity_replay")
+    artifacts = write_quantity_replay_report(report=report, out_dir=out_dir)
+    artifacts.update(write_quantity_manifests(out_dir=out_dir))
+    if teacher_extraction:
+        teacher_path = out_dir / "quantity_teacher_extraction.json"
+        teacher_path.write_text(json.dumps(teacher_extraction, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        artifacts["teacher_extraction_json"] = str(teacher_path)
+    if args.json:
+        _print_json(
+            {
+                "artifacts": artifacts,
+                "ledger_path": str(ledger_path),
+                "mode": args.mode,
+                "student_model": report.get("student_model", ""),
+                "case_count": report.get("case_count", 0),
+                "raw_success_count": report.get("raw_success_count", 0),
+                "bank_success_count": report.get("bank_success_count", 0),
+                "improvement_count": report.get("improvement_count", 0),
+                "teacher_calls": report.get("teacher_calls", 0),
+                "teacher_calls_in_student_lanes": report.get("teacher_calls_in_student_lanes", 0),
+                "authenticity_audit": report.get("authenticity_audit", {}),
+                "raw_parse_failure_count": report.get("raw_parse_failure_count", 0),
+                "bank_parse_failure_count": report.get("bank_parse_failure_count", 0),
+                "raw_wrong_target_count": report.get("raw_wrong_target_count", 0),
+                "bank_wrong_target_count": report.get("bank_wrong_target_count", 0),
+                "raw_boundary_violation_count": report.get("raw_boundary_violation_count", 0),
+                "bank_boundary_violation_count": report.get("bank_boundary_violation_count", 0),
+                "ledger_summary": report.get("ledger_summary", {}),
+            }
+        )
+    else:
+        print(f"Wrote quantity replay JSON: {artifacts['report_json']}")
+        print(f"Wrote quantity replay Markdown: {artifacts['report_markdown']}")
+        print(f"Wrote train cases: {artifacts['train_cases']}")
+        print(f"Wrote holdout cases: {artifacts['holdout_cases']}")
+        print(f"Ledger: {ledger_path}")
+        print(
+            "Summary: "
+            f"raw {report.get('raw_success_count', 0)}/{report.get('case_count', 0)} | "
+            f"bank {report.get('bank_success_count', 0)}/{report.get('case_count', 0)} | "
+            f"improvement {report.get('improvement_count', 0)} | "
+            f"teacher calls in student lanes {report.get('teacher_calls_in_student_lanes', 0)}"
         )
     return 0
 
@@ -2465,10 +2648,87 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_auto.add_argument("--ledger", default="", help="Optional existing global_transmutation_ledger.json for meta-fortress priors.")
     agency_auto.add_argument("--temperature", type=float, default=0.1)
     agency_auto.add_argument("--num-ctx", type=int, default=None)
+    agency_auto.add_argument("--teacher-max-tokens", type=int, default=None, help="Optional teacher output token cap.")
+    agency_auto.add_argument("--teacher-reasoning-effort", default="", help="Optional provider-specific reasoning effort, e.g. high for NVIDIA.")
     agency_auto.add_argument("--out-dir", default="", help="Directory for artifacts. Defaults to ./memla_reports/<timestamp>.")
     agency_auto.add_argument("--dry-run", action="store_true", help="Build architecture artifacts without calling a model.")
     agency_auto.add_argument("--json", action="store_true", help="Print the artifact summary as JSON.")
     agency_auto.set_defaults(func=_handle_agency_automate)
+
+    agency_nvidia = agency_sub.add_parser(
+        "nvidia-smoke",
+        help="Secret-free opt-in smoke path for NVIDIA DeepSeek V4 Flash teacher extraction.",
+    )
+    agency_nvidia.add_argument("--live", action="store_true", help="Actually call NVIDIA. Without this, no model call is made.")
+    agency_nvidia.add_argument(
+        "--prompt",
+        default="Doordash me two large cheese pizzas from Dominos and stop before payment.",
+        help="Agency task prompt for the smoke run.",
+    )
+    agency_nvidia.add_argument(
+        "--observation",
+        default="DoorDash item modal shows a large cheese pizza and Add to cart, but no quantity evidence.",
+        help="Observation text for the smoke run.",
+    )
+    agency_nvidia.add_argument("--app-family", default="doordash")
+    agency_nvidia.add_argument("--page-kind", default="dd_item_modal")
+    agency_nvidia.add_argument("--teacher-model", default=DEFAULT_NVIDIA_NIM_MODEL)
+    agency_nvidia.add_argument("--teacher-base-url", default=DEFAULT_NVIDIA_NIM_BASE_URL)
+    agency_nvidia.add_argument("--teacher-reasoning-effort", default="high")
+    agency_nvidia.add_argument("--teacher-max-tokens", type=int, default=2048)
+    agency_nvidia.add_argument("--temperature", type=float, default=0.1)
+    agency_nvidia.add_argument("--num-ctx", type=int, default=None)
+    agency_nvidia.add_argument("--out-dir", default="memla_reports/nvidia_deepseek_v4_flash_smoke")
+    agency_nvidia.add_argument("--json", action="store_true")
+    agency_nvidia.set_defaults(func=_handle_agency_nvidia_smoke)
+
+    agency_quantity = agency_sub.add_parser(
+        "quantity-replay",
+        help="Run the deterministic DoorDash quantity teacher-bank-student replay proof without live site actions.",
+    )
+    agency_quantity.add_argument(
+        "--mode",
+        choices=["legacy", "authentic"],
+        default="legacy",
+        help="legacy uses deterministic semantic replay; authentic requires real Ollama JSON decisions.",
+    )
+    agency_quantity.add_argument(
+        "--student-model",
+        default=os.environ.get("MEMLA_STUDENT_MODEL", "mistral:7b-instruct"),
+        help="Frozen local student model label to record in traces.",
+    )
+    agency_quantity.add_argument("--student-base-url", default="", help="Ollama base URL. Defaults to OLLAMA_HOST or localhost.")
+    agency_quantity.add_argument(
+        "--teacher-model",
+        default=DEFAULT_NVIDIA_NIM_MODEL,
+        help="Teacher model label to attach to the seeded compressed transmutation.",
+    )
+    agency_quantity.add_argument("--teacher-base-url", default=DEFAULT_NVIDIA_NIM_BASE_URL)
+    agency_quantity.add_argument("--teacher-reasoning-effort", default="high")
+    agency_quantity.add_argument("--teacher-max-tokens", type=int, default=2048)
+    agency_quantity.add_argument("--live-teacher", action="store_true", help="Call NVIDIA once to extract the train-only quantity rule.")
+    agency_quantity.add_argument(
+        "--ledger",
+        default=DEFAULT_AGENCY_LEDGER_PATH,
+        help="Durable agency ledger path. Defaults to .memla/agency_transmutation_ledger.json.",
+    )
+    agency_quantity.add_argument(
+        "--seed-rule",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Seed the quantity rule into the durable ledger before replay. Enabled by default.",
+    )
+    agency_quantity.add_argument("--trials", type=int, default=5, help="Trials per holdout in authentic mode.")
+    agency_quantity.add_argument("--temperature", type=float, default=0.1)
+    agency_quantity.add_argument("--num-ctx", type=int, default=None)
+    agency_quantity.add_argument("--seed-base", type=int, default=None, help="Recorded seed base where supported by the client.")
+    agency_quantity.add_argument(
+        "--out-dir",
+        default="memla_reports/agency_quantity_replay",
+        help="Directory for replay reports and frozen case manifests.",
+    )
+    agency_quantity.add_argument("--json", action="store_true", help="Print a compact JSON summary.")
+    agency_quantity.set_defaults(func=_handle_agency_quantity_replay)
 
     research_parser = subparsers.add_parser("research", help="Run bounded deep-research loop capture and benchmarks.")
     research_sub = research_parser.add_subparsers(dest="research_command")

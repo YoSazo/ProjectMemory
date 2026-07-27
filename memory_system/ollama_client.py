@@ -15,6 +15,15 @@ class ChatMessage:
     content: str
 
 
+@dataclass(frozen=True)
+class ChatResponse:
+    content: str
+    reasoning_content: str = ""
+    raw_response: dict[str, Any] | None = None
+    usage: dict[str, Any] | None = None
+    request_metadata: dict[str, Any] | None = None
+
+
 class UniversalLLMClient:
     """
     Universal chat client:
@@ -23,13 +32,15 @@ class UniversalLLMClient:
     - provider="anthropic": Anthropic /v1/messages (API key via x-api-key)
     - provider="github_models": GitHub Models /inference/chat/completions (GitHub token)
     - provider="gemini": Gemini generateContent API (API key via x-goog-api-key)
+    - provider="nvidia": NVIDIA NIM OpenAI-compatible /v1/chat/completions
 
     Configure via constructor or env:
-    - LLM_PROVIDER: "ollama" | "openai" | "anthropic" | "github_models" | "gemini"
+    - LLM_PROVIDER: "ollama" | "openai" | "anthropic" | "github_models" | "gemini" | "nvidia"
     - LLM_BASE_URL: e.g. "http://127.0.0.1:11434" (ollama) or "https://api.openai.com" or "https://api.anthropic.com"
     - LLM_API_KEY: any API key string (used when provider != "ollama")
     - GITHUB_TOKEN / GITHUB_MODELS_TOKEN: optional fallback when provider="github_models"
     - GEMINI_API_KEY / GOOGLE_API_KEY: optional fallback when provider="gemini"
+    - NVIDIA_API_KEY: optional fallback when provider="nvidia"
     """
 
     def __init__(
@@ -54,6 +65,8 @@ class UniversalLLMClient:
             api_key = os.environ.get("GITHUB_MODELS_TOKEN") or os.environ.get("GITHUB_TOKEN")
         if provider == "gemini" and not api_key:
             api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        if provider == "nvidia" and not api_key:
+            api_key = os.environ.get("NVIDIA_API_KEY")
         return cls(provider=provider, base_url=base_url, api_key=api_key)
 
     @staticmethod
@@ -67,6 +80,8 @@ class UniversalLLMClient:
                 if "://" not in ollama_host:
                     return f"http://{ollama_host}"
                 return ollama_host
+        if provider == "nvidia":
+            return "https://integrate.api.nvidia.com"
         return "http://127.0.0.1:11434"
 
     @staticmethod
@@ -76,6 +91,8 @@ class UniversalLLMClient:
             return "github_models"
         if normalized in {"google", "google_ai", "google_genai", "generative_language", "gemini_api"}:
             return "gemini"
+        if normalized in {"nvidia_nim", "nim", "nvapi"}:
+            return "nvidia"
         return normalized
 
     @staticmethod
@@ -91,6 +108,13 @@ class UniversalLLMClient:
                 return "https://generativelanguage.googleapis.com/v1beta"
             if base == "https://generativelanguage.googleapis.com":
                 return "https://generativelanguage.googleapis.com/v1beta"
+        if provider == "nvidia":
+            if not base or base in {"http://127.0.0.1:11434", "http://localhost:11434"}:
+                return "https://integrate.api.nvidia.com"
+            if base.endswith("/v1"):
+                return base.removesuffix("/v1")
+        if provider not in {"ollama", "anthropic", "github_models", "gemini"} and base.endswith("/v1"):
+            return base.removesuffix("/v1")
         return base or "http://127.0.0.1:11434"
 
     def chat(
@@ -100,17 +124,56 @@ class UniversalLLMClient:
         messages: list[ChatMessage],
         temperature: float = 0.2,
         num_ctx: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        reasoning_effort: str | None = None,
     ) -> str:
+        return self.chat_response(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            num_ctx=num_ctx,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+        ).content
+
+    def chat_response(
+        self,
+        *,
+        model: str,
+        messages: list[ChatMessage],
+        temperature: float = 0.2,
+        num_ctx: Optional[int] = None,
+        max_tokens: Optional[int] = None,
+        reasoning_effort: str | None = None,
+    ) -> ChatResponse:
         if self.provider == "ollama":
-            return self._chat_ollama(model=model, messages=messages, temperature=temperature, num_ctx=num_ctx)
+            return ChatResponse(
+                content=self._chat_ollama(model=model, messages=messages, temperature=temperature, num_ctx=num_ctx),
+                request_metadata={"provider": self.provider, "model": model},
+            )
         if self.provider == "anthropic":
-            return self._chat_anthropic(model=model, messages=messages, temperature=temperature)
+            return ChatResponse(
+                content=self._chat_anthropic(model=model, messages=messages, temperature=temperature),
+                request_metadata={"provider": self.provider, "model": model},
+            )
         if self.provider == "github_models":
-            return self._chat_github_models(model=model, messages=messages, temperature=temperature)
+            return ChatResponse(
+                content=self._chat_github_models(model=model, messages=messages, temperature=temperature),
+                request_metadata={"provider": self.provider, "model": model},
+            )
         if self.provider == "gemini":
-            return self._chat_gemini(model=model, messages=messages, temperature=temperature)
+            return ChatResponse(
+                content=self._chat_gemini(model=model, messages=messages, temperature=temperature),
+                request_metadata={"provider": self.provider, "model": model},
+            )
         # default to OpenAI-compatible
-        return self._chat_openai_compatible(model=model, messages=messages, temperature=temperature)
+        return self._chat_openai_compatible_response(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            reasoning_effort=reasoning_effort,
+        )
 
     def _chat_gemini(
         self,
@@ -270,6 +333,23 @@ class UniversalLLMClient:
         messages: list[ChatMessage],
         temperature: float,
     ) -> str:
+        return self._chat_openai_compatible_response(
+            model=model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=None,
+            reasoning_effort=None,
+        ).content
+
+    def _chat_openai_compatible_response(
+        self,
+        *,
+        model: str,
+        messages: list[ChatMessage],
+        temperature: float,
+        max_tokens: Optional[int],
+        reasoning_effort: str | None,
+    ) -> ChatResponse:
         url = f"{self.base_url}/v1/chat/completions"
         hdrs = dict(self.headers)
         if self.api_key:
@@ -281,6 +361,14 @@ class UniversalLLMClient:
             "messages": [{"role": m.role, "content": m.content} for m in messages],
             "temperature": float(temperature),
         }
+        if max_tokens is not None:
+            payload["max_tokens"] = int(max_tokens)
+        normalized_effort = str(reasoning_effort or "").strip().lower()
+        if self.provider == "nvidia" and normalized_effort:
+            payload["chat_template_kwargs"] = {
+                "thinking": normalized_effort not in {"none", "off", "false", "0"},
+                "reasoning_effort": normalized_effort,
+            }
 
         data = self._post_chat_json_with_temperature_retry(
             url=url,
@@ -289,12 +377,30 @@ class UniversalLLMClient:
         )
 
         try:
-            content = data["choices"][0]["message"]["content"]
+            message = data["choices"][0]["message"]
+            content = message["content"]
         except Exception as e:
             raise RuntimeError(f"Unexpected OpenAI-compatible response: {json.dumps(data)[:500]}") from e
         if not isinstance(content, str):
             raise RuntimeError(f"Unexpected OpenAI-compatible response: {json.dumps(data)[:500]}")
-        return content
+        reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+        if not isinstance(reasoning, str):
+            reasoning = json.dumps(reasoning, sort_keys=True)
+        usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
+        return ChatResponse(
+            content=content,
+            reasoning_content=reasoning,
+            raw_response=data,
+            usage=usage,
+            request_metadata={
+                "provider": self.provider,
+                "model": model,
+                "base_url": self.base_url,
+                "endpoint": "/v1/chat/completions",
+                "reasoning_effort": normalized_effort,
+                "max_tokens": max_tokens,
+            },
+        )
 
     def _chat_github_models(
         self,

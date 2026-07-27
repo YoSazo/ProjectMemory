@@ -10,6 +10,10 @@ sim*.sqlite-wal
 sim*.sqlite-shm
 adapters/
 .anthropic_env.ps1
+.env
+.env.*
+nvidiaapikey.txt
+*apikey.txt
 .codex_tmp_*
 benchmarks/locomo/results/
 memla_reports/

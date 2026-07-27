@@ -1,0 +1,235 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from memory_system.cli import main
+from memory_system.fortresses.agency_quantity_replay import (
+    DEFAULT_AGENCY_LEDGER_PATH,
+    QUANTITY_RULE_ID,
+    default_quantity_replay_cases,
+    extract_live_quantity_teacher_rule,
+    quantity_transmutation_to_ledger_entry,
+    retrieve_quantity_rules,
+    run_quantity_model_authentic_replay,
+    run_quantity_model_student_lane,
+    run_quantity_replay_proof,
+    run_quantity_student_lane,
+    seed_quantity_teacher_transmutation,
+    write_quantity_manifests,
+)
+from memory_system.fortresses.meta_fortress import GlobalTransmutationLedger
+from memory_system.ollama_client import ChatResponse
+
+
+class FakeStudentClient:
+    def __init__(self, *, malformed: bool = False) -> None:
+        self.calls = []
+        self.malformed = malformed
+
+    def chat_response(self, **kwargs):
+        self.calls.append(kwargs)
+        if self.malformed:
+            return ChatResponse(content="not json", request_metadata={"provider": "ollama", "fake": True})
+        user = json.loads(kwargs["messages"][1].content)
+        bank = list(user.get("bank_packet") or [])
+        current = int(user.get("current_quantity") or 0)
+        requested = int(user.get("requested_quantity") or 0)
+        candidates = list(user.get("candidate_actions") or [])
+        if not bank:
+            target = "add-to-cart"
+        elif current == requested or user.get("boundary_state") == "near_boundary":
+            return ChatResponse(
+                content=json.dumps(
+                    {
+                        "action_type": "stop",
+                        "target_id": "",
+                        "target_label": "quantity already verified",
+                        "rationale": "bank says verify or stop at boundary",
+                        "verifier": ["fresh quantity evidence"],
+                    }
+                ),
+                request_metadata={"provider": "ollama", "fake": True},
+            )
+        else:
+            action = "increment" if current < requested else "decrement"
+            target = next(
+                row["target_id"]
+                for row in candidates
+                if row.get("metadata", {}).get("quantity_action") == action
+                and "cheese pizza" in str(row.get("metadata", {}).get("item_context", "")).lower()
+            )
+        return ChatResponse(
+            content=json.dumps(
+                {
+                    "action_type": "tap",
+                    "target_id": target,
+                    "target_label": target,
+                    "rationale": "selected from model output",
+                    "verifier": ["fresh quantity evidence"],
+                }
+            ),
+            request_metadata={"provider": "ollama", "fake": True},
+        )
+
+
+class FakeTeacherClient:
+    def chat_response(self, **kwargs):
+        payload = {
+            "teacher_trace_id": "live_fake_deepseek_trace",
+            "constraint_family": "numeric",
+            "root_cause": "The student treated quantity as cart progress instead of a slot invariant.",
+            "transmutations": [
+                {
+                    "transmutation": "Require item-scoped quantity evidence before Add to cart.",
+                    "action_schema": "adjust_quantity_then_reinspect",
+                    "constraints_before": ["quantity missing"],
+                    "constraints_after": ["quantity verified"],
+                    "observation_cues": ["increase quantity", "quantity"],
+                    "verifier": ["fresh observation shows requested quantity"],
+                    "repair_policy": ["tap item-scoped increment/decrement"],
+                    "boundary_policy": ["stop before payment while quantity unverified"],
+                    "transfer_targets": ["doordash", "ubereats"],
+                    "confidence": 0.91,
+                }
+            ],
+        }
+        return ChatResponse(
+            content=json.dumps(payload),
+            reasoning_content="teacher inspected missing quantity evidence",
+            usage={"total_tokens": 123},
+            request_metadata={"provider": "nvidia", "model": kwargs["model"]},
+        )
+
+
+def _quantity_ledger() -> GlobalTransmutationLedger:
+    transmutation = seed_quantity_teacher_transmutation()
+    entry = quantity_transmutation_to_ledger_entry(transmutation)
+    return GlobalTransmutationLedger([entry])
+
+
+def test_quantity_replay_freezes_train_and_holdout_manifests(tmp_path):
+    artifacts = write_quantity_manifests(out_dir=tmp_path)
+    train_rows = [
+        json.loads(line)
+        for line in (tmp_path / "train_quantity_cases.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    holdout_rows = [
+        json.loads(line)
+        for line in (tmp_path / "holdout_quantity_cases.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+
+    assert artifacts["train_cases"].endswith("train_quantity_cases.jsonl")
+    assert [row["case_id"] for row in train_rows] == ["train_two_stepper_visible"]
+    assert {row["case_id"] for row in holdout_rows} == {
+        "holdout_digit_2",
+        "holdout_pair",
+        "holdout_already_two",
+        "holdout_accidental_three",
+        "holdout_cart_only_quantity",
+        "holdout_duplicated_plus_buttons",
+        "holdout_checkout_unverified",
+        "holdout_ubereats_sibling_stepper",
+    }
+
+
+def test_quantity_rule_retrieval_uses_observation_cues_and_transfers_to_ubereats():
+    ledger = _quantity_ledger()
+    ubereats_case = next(case for case in default_quantity_replay_cases() if case.case_id == "holdout_ubereats_sibling_stepper")
+
+    retrieved = retrieve_quantity_rules(ledger=ledger, snapshot=ubereats_case.snapshot())
+
+    assert retrieved
+    assert retrieved[0]["rule_id"] == QUANTITY_RULE_ID
+    assert "quantity" in retrieved[0]["cue_text"]
+
+
+def test_quantity_replay_improves_frozen_student_without_teacher_calls():
+    report = run_quantity_replay_proof(ledger=_quantity_ledger(), student_model="mistral:7b-instruct")
+
+    assert report["teacher_calls_in_student_lanes"] == 0
+    assert report["case_count"] == 8
+    assert report["raw_success_count"] < report["bank_success_count"]
+    assert report["bank_success_count"] == 8
+    assert report["improvement_count"] == report["bank_success_count"] - report["raw_success_count"]
+    duplicated = next(row for row in report["rows"] if row["case"]["case_id"] == "holdout_duplicated_plus_buttons")
+    assert duplicated["bank_trace"]["action"]["target_id"] == "pizza-plus"
+
+
+def test_quantity_student_lane_rejects_teacher_client():
+    case = default_quantity_replay_cases()[0]
+
+    with pytest.raises(RuntimeError, match="Teacher client is forbidden"):
+        run_quantity_student_lane(case=case, model="mistral:7b-instruct", teacher_client=object())
+
+
+def test_model_authentic_replay_requires_student_client_calls_and_scores_state():
+    client = FakeStudentClient()
+    report = run_quantity_model_authentic_replay(
+        ledger=_quantity_ledger(),
+        student_client=client,
+        student_model="mistral:7b-instruct",
+        trials=2,
+    )
+
+    assert len(client.calls) == 32
+    assert report["authenticity_audit"]["student_lanes_made_real_requests"] is True
+    assert report["authenticity_audit"]["hardcoded_policy_selected_student_actions"] is False
+    assert report["authenticity_audit"]["candidate_rule_from_nvidia_response"] is False
+    assert report["teacher_calls_in_student_lanes"] == 0
+    assert report["raw_success_count"] < report["bank_success_count"]
+    assert report["bank_success_count"] == 16
+    assert report["raw_verifier_failure_count"] > 0
+
+
+def test_model_authentic_lane_records_parse_failure_without_fallback():
+    case = default_quantity_replay_cases()[1]
+    result = run_quantity_model_student_lane(
+        case=case,
+        model="mistral:7b-instruct",
+        client=FakeStudentClient(malformed=True),
+        retrieved_rules=[],
+    )
+
+    assert result["success"] is False
+    assert result["parse_failure"] is True
+    assert result["execution"]["failure_type"] == "parse_failure"
+    assert result["decision"] is None
+
+
+def test_live_teacher_extraction_preserves_response_hash_and_holdout_guard():
+    extraction = extract_live_quantity_teacher_rule(teacher_client=FakeTeacherClient())
+
+    assert extraction["teacher_call_status"] == "completed"
+    assert extraction["teacher_provider"] == "nvidia"
+    assert extraction["raw_teacher_response_hash"]
+    assert extraction["compressed_transmutation"]["source_teacher_trace_id"] == "live_fake_deepseek_trace"
+    assert extraction["holdout_leakage_guard"]["teacher_saw_splits"] == ["train"]
+    assert extraction["holdout_leakage_guard"]["teacher_holdout_case_count"] == 0
+
+
+def test_agency_quantity_replay_cli_writes_ledger_and_reports(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    out_dir = tmp_path / "reports"
+    rc = main(
+        [
+            "agency",
+            "quantity-replay",
+            "--student-model",
+            "mistral:7b-instruct",
+            "--out-dir",
+            str(out_dir),
+            "--json",
+        ]
+    )
+
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["student_model"] == "mistral:7b-instruct"
+    assert payload["case_count"] == 8
+    assert payload["bank_success_count"] == 8
+    assert payload["teacher_calls_in_student_lanes"] == 0
+    assert (tmp_path / DEFAULT_AGENCY_LEDGER_PATH).exists()
+    assert (out_dir / "quantity_replay_report.json").exists()
+    assert (out_dir / "quantity_replay_report.md").exists()

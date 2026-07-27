@@ -14,6 +14,7 @@ from memory_system.fortresses.agency_automation import (
     run_agency_automation,
     write_agency_automation_artifacts,
 )
+from memory_system.ollama_client import ChatResponse
 
 
 class _FakeAgencyTeacher:
@@ -61,6 +62,24 @@ class _FakeAgencyTeacher:
         if self.wrap_json:
             return f"Teacher trace follows:\n{text}\nEnd."
         return text
+
+
+class _FakeReasoningTeacher(_FakeAgencyTeacher):
+    provider = "nvidia"
+
+    def chat_response(self, *, model, messages, temperature=0.2, num_ctx=None, max_tokens=None, reasoning_effort=None):
+        content = self.chat(model=model, messages=messages, temperature=temperature, num_ctx=num_ctx)
+        return ChatResponse(
+            content=content,
+            reasoning_content="teacher inspected missing quantity evidence",
+            usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+            request_metadata={
+                "provider": "nvidia",
+                "model": model,
+                "reasoning_effort": reasoning_effort,
+                "max_tokens": max_tokens,
+            },
+        )
 
 
 def test_agency_automation_spec_is_meta_fortress_centered_and_easy_to_run():
@@ -185,6 +204,26 @@ def test_run_agency_automation_with_teacher_populates_ledger_and_artifacts(tmp_p
     assert "# Agency Automation Meta-Fortress" in markdown
 
 
+def test_run_agency_automation_captures_teacher_reasoning_metadata():
+    teacher = _FakeReasoningTeacher()
+
+    report = run_agency_automation(
+        prompt="Doordash me two large cheese pizzas from Dominos and stop before payment.",
+        observation="DoorDash item modal shows Large Cheese Pizza and Add to cart.",
+        teacher_model="deepseek-ai/deepseek-v4-flash",
+        teacher_client=teacher,
+        teacher_max_tokens=2048,
+        teacher_reasoning_effort="high",
+    )
+
+    assert report["teacher_provider"] == "nvidia"
+    assert report["teacher_call_status"] == "completed"
+    assert report["raw_teacher_reasoning_content"] == "teacher inspected missing quantity evidence"
+    assert report["teacher_usage"]["total_tokens"] == 150
+    assert report["teacher_request_metadata"]["reasoning_effort"] == "high"
+    assert report["teacher_request_metadata"]["max_tokens"] == 2048
+
+
 def test_agency_automation_cli_dry_run_skips_client(monkeypatch, tmp_path, capsys):
     def fail_client(*args, **kwargs):
         raise AssertionError("dry-run should not build a teacher client")
@@ -254,3 +293,82 @@ def test_agency_automation_cli_uses_single_api_key_path(monkeypatch, tmp_path, c
     assert getattr(client, "api_key") == "test-key"
     assert payload["teacher_call_status"] == "completed"
     assert payload["compressed_transmutation_count"] == 1
+
+
+def test_agency_automation_cli_builds_nvidia_teacher_from_env(monkeypatch, tmp_path, capsys):
+    captured: dict[str, object] = {}
+
+    def fake_run(**kwargs):
+        captured["teacher_client"] = kwargs["teacher_client"]
+        captured["teacher_reasoning_effort"] = kwargs["teacher_reasoning_effort"]
+        captured["teacher_max_tokens"] = kwargs["teacher_max_tokens"]
+        return {
+            "automation_id": AGENCY_AUTOMATION_ID,
+            "teacher_model": kwargs["teacher_model"],
+            "teacher_provider": "nvidia",
+            "teacher_call_status": "completed",
+            "teacher_reasoning_effort": kwargs["teacher_reasoning_effort"],
+            "teacher_max_tokens": kwargs["teacher_max_tokens"],
+            "constraint_count": 1,
+            "ungrounded_constraint_count": 1,
+            "confusion": {"uncertainty_type": "ungrounded_numeric_constraint"},
+            "micro_fortress": {
+                "micro_fortress_id": "micro_cli",
+                "teacher_prompt_budget": {"estimated_teacher_input_tokens": 100},
+            },
+            "compressed_transmutation_count": 1,
+            "ledger_summary": {"entry_count": 1, "rule_count": 1, "negative_transfer_count": 0},
+            "failure_count": 0,
+            "constraints": [],
+            "compressed_transmutations": [],
+            "ledger": {"entries": []},
+        }
+
+    monkeypatch.setattr(cli, "run_agency_automation", fake_run)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-test")
+
+    exit_code = cli.main(
+        [
+            "agency",
+            "automate",
+            "--teacher-provider",
+            "nvidia",
+            "--teacher-base-url",
+            "https://integrate.api.nvidia.com/v1",
+            "--teacher-model",
+            "deepseek-ai/deepseek-v4-flash",
+            "--teacher-reasoning-effort",
+            "high",
+            "--teacher-max-tokens",
+            "2048",
+            "--out-dir",
+            str(tmp_path),
+            "--json",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    client = captured["teacher_client"]
+
+    assert exit_code == 0
+    assert getattr(client, "provider") == "nvidia"
+    assert getattr(client, "base_url") == "https://integrate.api.nvidia.com"
+    assert getattr(client, "api_key") == "nvapi-test"
+    assert captured["teacher_reasoning_effort"] == "high"
+    assert captured["teacher_max_tokens"] == 2048
+    assert payload["teacher_provider"] == "nvidia"
+
+
+def test_agency_nvidia_smoke_is_dry_by_default(monkeypatch, capsys):
+    def fail_run(**kwargs):
+        raise AssertionError("nvidia-smoke without --live must not call a model")
+
+    monkeypatch.setattr(cli, "run_agency_automation", fail_run)
+
+    exit_code = cli.main(["agency", "nvidia-smoke", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert payload["live"] is False
+    assert payload["teacher_provider"] == "nvidia"
+    assert payload["status"] == "ready_dry_run_no_model_called"

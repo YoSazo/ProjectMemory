@@ -35,6 +35,7 @@ class OrderSpec:
     restaurant: OrderSpecField = field(default_factory=OrderSpecField)
     item: OrderSpecField = field(default_factory=OrderSpecField)
     size: OrderSpecField = field(default_factory=OrderSpecField)
+    quantity: OrderSpecField = field(default_factory=OrderSpecField)
     toppings: OrderSpecField = field(default_factory=OrderSpecField)
     add_ons: OrderSpecField = field(default_factory=OrderSpecField)
     tip: OrderSpecField = field(default_factory=OrderSpecField)
@@ -136,6 +137,19 @@ _FOOD_SIZE_PATTERNS: list[tuple[str, str]] = [
     (r"\bfamily(?:\s+size)?\b", "Family Size"),
 ]
 
+_QUANTITY_WORDS: dict[str, int] = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+}
+
 
 def _strip_food_leading_words(value: str) -> str:
     return re.sub(r"^(?:me|the|a|an|some)\s+", "", _clean_text(value), flags=re.IGNORECASE).strip(" .,")
@@ -155,6 +169,50 @@ def _remove_food_size(value: str) -> str:
             text = re.sub(pattern, " ", text, count=1, flags=re.IGNORECASE)
             break
     return " ".join(text.split()).strip(" .,")
+
+
+def _extract_food_quantity(value: str) -> tuple[int, str]:
+    text = _normalize_text(value)
+    if not text:
+        return 0, ""
+    if re.search(r"\b(?:a|one)\s+pair\s+of\b|\bpair\s+of\b", text):
+        return 2, "pair"
+    digit_match = re.search(r"(?<![$.])\b([2-9]|10)\b(?![.\d])", text)
+    if digit_match:
+        return int(digit_match.group(1)), digit_match.group(1)
+    for word, quantity in _QUANTITY_WORDS.items():
+        if re.search(rf"\b{word}\b", text):
+            return quantity, word
+    return 0, ""
+
+
+def _remove_food_quantity(value: str) -> str:
+    text = _clean_text(value)
+    text = re.sub(r"\b(?:a|one)\s+pair\s+of\b", " ", text, count=1, flags=re.IGNORECASE)
+    text = re.sub(r"\bpair\s+of\b", " ", text, count=1, flags=re.IGNORECASE)
+    text = re.sub(r"(?<![$.])\b(?:[2-9]|10)\b(?![.\d])", " ", text, count=1, flags=re.IGNORECASE)
+    text = re.sub(
+        r"\b(?:one|two|three|four|five|six|seven|eight|nine|ten)\b",
+        " ",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return " ".join(text.split()).strip(" .,")
+
+
+def _normalize_food_item_label(value: str) -> str:
+    text = _clean_text(value)
+    plural_replacements = {
+        r"\bpizzas\b": "pizza",
+        r"\bburgers\b": "burger",
+        r"\btacos\b": "tacos",
+        r"\bwings\b": "wings",
+        r"\bsalads\b": "salad",
+    }
+    for pattern, replacement in plural_replacements.items():
+        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+    return _title_text(text)
 
 
 def _clean_food_phrase(value: str) -> str:
@@ -197,7 +255,7 @@ def _extract_food_slots(prompt: str) -> dict[str, str]:
         slots["service"] = "food delivery"
 
     food_stop_pattern = r",|\b(?:from|with|make(?:\s+it|\s+the)?|have|add|and\s+add|give|tip|for delivery|to|top(?:\s+it)?(?:\s+with)?|toppings?)\b"
-    restaurant = _extract_between(raw, r"\bfrom\b", r",|\b(?:with|make(?:\s+it|\s+the)?|have|add|and\s+add|give|tip|for delivery|to|top(?:\s+it)?(?:\s+with)?|toppings?)\b")
+    restaurant = _extract_between(raw, r"\bfrom\b", r",|\b(?:with|make(?:\s+it|\s+the)?|have|add|and\s+add|and\s+stop|stop|give|tip|for delivery|to|top(?:\s+it)?(?:\s+with)?|toppings?)\b")
     if restaurant and restaurant.lower() not in {"doordash", "uber eats"}:
         slots["restaurant"] = restaurant
 
@@ -206,18 +264,23 @@ def _extract_food_slots(prompt: str) -> dict[str, str]:
         item = _extract_between(raw, r"\b(?:doordash|uber eats)\b", food_stop_pattern)
     if item:
         item = _strip_food_leading_words(item)
+    quantity_value, _quantity_source = _extract_food_quantity(item or raw)
+    if quantity_value > 0:
+        slots["quantity"] = str(quantity_value)
     if not item:
         known_items = ["pizza", "burger", "sushi", "taco", "tacos", "burrito", "wings", "salad", "food"]
         for known_item in known_items:
             if re.search(rf"\b{re.escape(known_item)}\b", normalized):
                 item = known_item
                 break
+    if item:
+        item = _remove_food_quantity(item)
     size = _extract_food_size(item or raw)
     if size:
         slots["size"] = size
         item = _remove_food_size(item or "")
     if item:
-        slots["item"] = _title_text(item)
+        slots["item"] = _normalize_food_item_label(item)
 
     modifiers = _extract_between(raw, r"\b(?:with|make it(?: have)?|have)\b", r",|\b(?:and\s+add|give|tip|that's it|that is it|thats it|for delivery|to)\b")
     if modifiers:
@@ -267,6 +330,7 @@ def _compile_food_order_spec(prompt: str, slots: dict[str, str]) -> OrderSpec:
     restaurant = slots.get("restaurant", "")
     item = slots.get("item", "")
     size = slots.get("size", "")
+    quantity = slots.get("quantity", "")
     toppings = _split_food_list(slots.get("toppings", ""))
     add_ons = _split_food_list(slots.get("add_ons", ""))
     tip = slots.get("tip", "")
@@ -276,6 +340,7 @@ def _compile_food_order_spec(prompt: str, slots: dict[str, str]) -> OrderSpec:
     explicit_toppings = bool(re.search(r"\b(?:make(?:\s+the)?\s+toppings?|toppings?|top(?:\s+it)?(?:\s+with)?)\b", prompt, flags=re.IGNORECASE))
     explicit_add_ons = bool(re.search(r"\b(?:and\s+)?add\b", prompt, flags=re.IGNORECASE))
     explicit_tip = bool(re.search(r"\btip\b|\$\d+(?:\.\d{1,2})?", prompt, flags=re.IGNORECASE))
+    quantity_value, quantity_source = _extract_food_quantity(prompt)
 
     service_field = _order_spec_field(
         [service] if service else [],
@@ -304,6 +369,13 @@ def _compile_food_order_spec(prompt: str, slots: dict[str, str]) -> OrderSpec:
         confidence=0.99 if size_explicit else (0.0 if not size else 0.7),
         criticality="important",
         source="explicit_size" if size_explicit else ("size_inference" if size else "missing"),
+        needs_clarification=False,
+    )
+    quantity_field = _order_spec_field(
+        [quantity] if quantity else [],
+        confidence=0.99 if quantity and quantity_value > 0 else (0.0 if not quantity else 0.7),
+        criticality="required" if quantity and quantity != "1" else "optional",
+        source=f"explicit_quantity:{quantity_source}" if quantity and quantity_source else ("quantity_inference" if quantity else "missing"),
         needs_clarification=False,
     )
     toppings_field = _order_spec_field(
@@ -342,6 +414,7 @@ def _compile_food_order_spec(prompt: str, slots: dict[str, str]) -> OrderSpec:
         restaurant=restaurant_field,
         item=item_field,
         size=size_field,
+        quantity=quantity_field,
         toppings=toppings_field,
         add_ons=add_ons_field,
         tip=tip_field,
@@ -584,6 +657,19 @@ def _food_capsule(prompt: str, draft: ActionDraftPayload) -> ActionCapsule:
         blockers.insert(0, "missing_restaurant")
     if clarification_blockers:
         blockers = clarification_blockers + blockers
+    verifier_requirements = [
+        "restaurant_match",
+        "item_match",
+        "modifier_match",
+        "tip_match",
+        "total_price_limit",
+        "delivery_address_match",
+        "user_checkout_confirmation",
+    ]
+    residual_constraints = list(draft.residual_constraints)
+    if slots.get("quantity"):
+        verifier_requirements.insert(3, "quantity_match")
+        residual_constraints.append("quantity_verification_required")
     summary = (
         "Food order spec compiled, but Memla needs to clarify the order before opening the service bridge."
         if clarification_blockers
@@ -612,9 +698,9 @@ def _food_capsule(prompt: str, draft: ActionDraftPayload) -> ActionCapsule:
             if clarification_blockers
             else "Use the structured capsule to search/build the cart. Stop at checkout for user review and purchase confirmation."
         ),
-        verifier_requirements=["restaurant_match", "item_match", "modifier_match", "tip_match", "total_price_limit", "delivery_address_match", "user_checkout_confirmation"],
+        verifier_requirements=list(dict.fromkeys(verifier_requirements)),
         auto_submit_blockers=blockers,
-        residual_constraints=list(dict.fromkeys(list(draft.residual_constraints) + clarification_blockers)),
+        residual_constraints=list(dict.fromkeys(residual_constraints + clarification_blockers)),
         order_spec=order_spec,
     )
 

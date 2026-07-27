@@ -649,10 +649,20 @@ def agency_fortress_v0_spec() -> dict[str, Any]:
     }
 
 
-def _food_slots(service: str, restaurant: str, item: str, size: str = "", toppings: str = "", tip: str = "") -> dict[str, str]:
+def _food_slots(
+    service: str,
+    restaurant: str,
+    item: str,
+    size: str = "",
+    toppings: str = "",
+    tip: str = "",
+    quantity: str = "",
+) -> dict[str, str]:
     slots = {"service": service, "restaurant": restaurant, "item": item}
     if size:
         slots["size"] = size
+    if quantity:
+        slots["quantity"] = quantity
     if toppings:
         slots["toppings"] = toppings
         slots["modifiers"] = toppings
