@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import asdict, is_dataclass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -148,7 +149,7 @@ from .fortresses.agency_quantity_replay import (
     write_quantity_replay_report,
 )
 from .fortresses.meta_fortress import GlobalTransmutationLedger
-from .ollama_client import UniversalLLMClient
+from .ollama_client import ChatMessage, UniversalLLMClient
 from .terminal_workbench import serve_terminal_workbench
 
 
@@ -922,6 +923,69 @@ def _handle_agency_nvidia_smoke(args: argparse.Namespace) -> int:
         json=args.json,
     )
     return _handle_agency_automate(run_args)
+
+
+def _handle_agency_nvidia_auth_check(args: argparse.Namespace) -> int:
+    api_key = os.environ.get("NVIDIA_API_KEY") or os.environ.get("LLM_API_KEY") or ""
+    provider = "NVIDIA_API_KEY" if os.environ.get("NVIDIA_API_KEY") else ("LLM_API_KEY" if os.environ.get("LLM_API_KEY") else "")
+    base_url = UniversalLLMClient._normalize_base_url("nvidia", args.teacher_base_url)
+    result: dict[str, Any] = {
+        "provider": "nvidia",
+        "key_env": provider,
+        "key_present": bool(api_key),
+        "key_length": len(api_key),
+        "base_url": base_url,
+        "model": args.teacher_model,
+        "request_sent": False,
+        "authorized": False,
+    }
+    if not api_key:
+        result["status"] = "missing_key"
+        if args.json:
+            _print_json(result)
+        else:
+            print("No NVIDIA key found. Set NVIDIA_API_KEY, or LLM_API_KEY as a fallback.")
+        return 1
+
+    client = UniversalLLMClient(provider="nvidia", base_url=base_url, api_key=api_key)
+    try:
+        result["request_sent"] = True
+        response = client.chat_response(
+            model=args.teacher_model,
+            messages=[ChatMessage(role="user", content="Reply with exactly: ok")],
+            temperature=0.0,
+            max_tokens=8,
+            reasoning_effort=args.teacher_reasoning_effort,
+        )
+    except Exception as exc:
+        text = str(exc)
+        result["status"] = "failed"
+        result["error_class"] = exc.__class__.__name__
+        result["error"] = text[:600]
+        if "401" in text or "Unauthorized" in text:
+            result["diagnosis"] = "unauthorized_key"
+        elif "404" in text:
+            result["diagnosis"] = "model_or_endpoint_not_found"
+        elif "429" in text:
+            result["diagnosis"] = "rate_limited_or_quota"
+        else:
+            result["diagnosis"] = "request_failed"
+        if args.json:
+            _print_json(result)
+        else:
+            print(json.dumps(result, indent=2, sort_keys=True))
+        return 1
+
+    result["authorized"] = True
+    result["status"] = "ok"
+    result["response_hash"] = hashlib.sha256(response.content.encode("utf-8")).hexdigest()
+    result["usage"] = response.usage or {}
+    result["request_metadata"] = response.request_metadata or {}
+    if args.json:
+        _print_json(result)
+    else:
+        print(json.dumps(result, indent=2, sort_keys=True))
+    return 0
 
 
 def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
@@ -2710,6 +2774,16 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_nvidia.add_argument("--out-dir", default="memla_reports/nvidia_deepseek_v4_flash_smoke")
     agency_nvidia.add_argument("--json", action="store_true")
     agency_nvidia.set_defaults(func=_handle_agency_nvidia_smoke)
+
+    agency_nvidia_auth = agency_sub.add_parser(
+        "nvidia-auth-check",
+        help="Send a tiny secret-safe NVIDIA request and classify auth, endpoint, quota, or model errors.",
+    )
+    agency_nvidia_auth.add_argument("--teacher-model", default=DEFAULT_NVIDIA_NIM_MODEL)
+    agency_nvidia_auth.add_argument("--teacher-base-url", default=DEFAULT_NVIDIA_NIM_BASE_URL)
+    agency_nvidia_auth.add_argument("--teacher-reasoning-effort", default="none")
+    agency_nvidia_auth.add_argument("--json", action="store_true")
+    agency_nvidia_auth.set_defaults(func=_handle_agency_nvidia_auth_check)
 
     agency_quantity = agency_sub.add_parser(
         "quantity-replay",

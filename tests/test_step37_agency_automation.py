@@ -372,3 +372,16 @@ def test_agency_nvidia_smoke_is_dry_by_default(monkeypatch, capsys):
     assert payload["live"] is False
     assert payload["teacher_provider"] == "nvidia"
     assert payload["status"] == "ready_dry_run_no_model_called"
+
+
+def test_agency_nvidia_auth_check_reports_missing_key(monkeypatch, capsys):
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+
+    exit_code = cli.main(["agency", "nvidia-auth-check", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 1
+    assert payload["status"] == "missing_key"
+    assert payload["key_present"] is False
+    assert payload["request_sent"] is False
