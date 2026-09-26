@@ -371,19 +371,28 @@ def retrieve_live_teacher_packet(
             }
         ]
     candidates = list(observation.get("candidates") or [])
-    same_kind = [candidate for candidate in candidates if candidate.kind == str(rule.get("target_kind") or "")]
+    same_kind = [
+        candidate
+        for candidate in candidates
+        if candidate.kind == str(rule.get("target_kind") or "") and candidate.safety == "safe"
+    ]
     exact = [candidate for candidate in same_kind if candidate.label == str(rule.get("target_label") or "")]
     source_goal = str(compiled_trace.get("goal") or "")
     goal_adapted = bool(goal and " ".join(goal.lower().split()) != " ".join(source_goal.lower().split()))
     goal_tokens = _tokens(goal)
+    source_goal_tokens = _tokens(source_goal)
+    target_label_tokens = _tokens(str(rule.get("target_label") or ""))
+    target_contains_changed_slot = bool(target_label_tokens.intersection(source_goal_tokens - goal_tokens))
     target_domain = str(rule.get("target_domain") or "")
     target_domain_brand = target_domain.split(".", 1)[0]
     preserve_target_domain = bool(target_domain_brand and target_domain_brand in goal_tokens)
-    if exact and not (goal_adapted and rule.get("page_class") == "google_results"):
+    if exact and not (
+        goal_adapted
+        and (rule.get("page_class") == "google_results" or target_contains_changed_slot)
+    ):
         selected = exact[0]
         binding_mode = "exact_affordance"
     elif same_kind:
-        source_goal_tokens = _tokens(source_goal)
         target_tokens = _tokens(f"{rule.get('target_label', '')} {rule.get('target_href', '')}")
         structural_tokens = target_tokens - source_goal_tokens
 
@@ -1121,6 +1130,7 @@ def build_live_trace_completion_proof(
     teacher_report: dict[str, Any],
     raw_report: dict[str, Any],
     bank_report: dict[str, Any],
+    required_selected_terms: list[str] | None = None,
 ) -> dict[str, Any]:
     trace = compile_live_teacher_trace(teacher_report)
     rules = list(trace.get("rules") or [])
@@ -1129,6 +1139,8 @@ def build_live_trace_completion_proof(
         rows = list(report.get("rows") or [])
         sequence: list[dict[str, Any]] = []
         matches: list[bool] = []
+        packet_matches: list[bool] = []
+        selected_labels: list[str] = []
         transaction_progression_executions = 0
         for index, rule in enumerate(rules):
             row = dict(rows[index]) if index < len(rows) else {}
@@ -1139,6 +1151,8 @@ def build_live_trace_completion_proof(
                 {},
             )
             execution = dict(row.get("execution") or {})
+            packet = list(row.get("bank_packet") or [])
+            required = dict(packet[0].get("required_next_action") or {}) if packet else {}
             terminal = str(rule.get("action") or "") in {"stop", "ask"}
             matched = (
                 decision.get("action") == rule.get("action")
@@ -1148,6 +1162,13 @@ def build_live_trace_completion_proof(
                 and (terminal or execution.get("executed") is True)
             )
             matches.append(bool(matched))
+            packet_matched = bool(required) and all(
+                str(decision.get(field) or "") == str(required.get(field) or "")
+                for field in ("action", "candidate_id", "text")
+            )
+            packet_matches.append(packet_matched)
+            if selected.get("label"):
+                selected_labels.append(str(selected["label"]))
             sequence.append(
                 {
                     "trace_index": index,
@@ -1178,6 +1199,11 @@ def build_live_trace_completion_proof(
             "teacher_trace_hash": report.get("teacher_trace_hash", ""),
             "stop_reason": report.get("stop_reason", ""),
             "trace_complete": bool(rules) and all(matches),
+            "adapted_packet_sequence_complete": bool(rules) and all(packet_matches),
+            "required_selected_terms": list(required_selected_terms or []),
+            "selected_term_evidence_complete": all(
+                term.lower() in " ".join(selected_labels).lower() for term in (required_selected_terms or [])
+            ),
             "terminal_rule_followed": bool(rules) and rules[-1].get("action") in {"stop", "ask"} and bool(matches[-1]),
             "transaction_progression_executions": transaction_progression_executions,
             "sequence": sequence,
@@ -1186,7 +1212,11 @@ def build_live_trace_completion_proof(
     raw = summarize(raw_report)
     bank = summarize(bank_report)
     return {
-        "proof_id": "agency_live_teacher_item_sequence_v0",
+        "proof_id": (
+            "agency_live_teacher_item_mutation_v0"
+            if required_selected_terms
+            else "agency_live_teacher_item_sequence_v0"
+        ),
         "generated_ts": int(time.time()),
         "teacher": {
             "model": trace.get("source_model", ""),
@@ -1217,18 +1247,26 @@ def write_live_trace_completion_proof(report: dict[str, Any], out_dir: str | Pat
     raw = dict(report.get("raw") or {})
     bank = dict(report.get("bank") or {})
     authenticity = dict(report.get("authenticity") or {})
+    adapted = bool(bank.get("required_selected_terms"))
     lines = [
-        "# Agency Live Item-Sequence Proof",
+        "# Agency Live Item-Mutation Proof" if adapted else "# Agency Live Item-Sequence Proof",
         "",
         f"- Teacher: `{dict(report.get('teacher') or {}).get('model', '')}`",
         f"- Raw trace complete: `{raw.get('trace_complete', False)}`",
         f"- Bank trace complete: `{bank.get('trace_complete', False)}`",
+        f"- Bank adapted packet sequence complete: `{bank.get('adapted_packet_sequence_complete', False)}`",
+        f"- Required selected-term evidence complete: `{bank.get('selected_term_evidence_complete', False)}`",
         f"- Bank terminal stop followed: `{bank.get('terminal_rule_followed', False)}`",
         f"- Teacher calls in student runs: `{authenticity.get('teacher_calls_in_student_runs', 0)}`",
         f"- Transaction progression actions executed: `{raw.get('transaction_progression_executions', 0) + bank.get('transaction_progression_executions', 0)}`",
         "",
-        "The frozen teacher sequence opens the store, opens the target item, selects the large size, and stops before cart. "
-        "This is one live item task and is not yet a cross-item transfer claim.",
+        (
+            "The frozen cheese-pizza teacher sequence rebinds its item and size slots to the mutated goal, then stops before cart. "
+            "This is one live cross-item mutation and is not yet a broad item-family claim."
+            if adapted
+            else "The frozen teacher sequence opens the store, opens the target item, selects the large size, and stops before cart. "
+            "This is one live item task and is not yet a cross-item transfer claim."
+        ),
     ]
     markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"report_json": str(json_path), "report_markdown": str(markdown_path)}

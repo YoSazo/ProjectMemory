@@ -1,0 +1,158 @@
+{
+  "authenticity": {
+    "bank_uses_teacher_trace": true,
+    "no_transaction_progression_executed": true,
+    "raw_has_no_teacher_trace": true,
+    "teacher_calls_in_student_runs": 0
+  },
+  "bank": {
+    "adapted_packet_sequence_complete": true,
+    "report_hash": "0309fada4e1e69abdd87990b48b86df7ab23cd51aee2362f408e02811789788c",
+    "required_selected_terms": [
+      "pepperoni",
+      "large"
+    ],
+    "selected_term_evidence_complete": true,
+    "sequence": [
+      {
+        "actual_action": "click",
+        "actual_label": "View Menu",
+        "expected_action": "click",
+        "expected_label": "View Menu",
+        "matched": true,
+        "trace_index": 0
+      },
+      {
+        "actual_action": "click",
+        "actual_label": "Pepperoni Lover's\u00ae Pizza $22.19 \u2022 90% (11)",
+        "expected_action": "click",
+        "expected_label": "Cheese Pizza $13.91",
+        "matched": false,
+        "trace_index": 1
+      },
+      {
+        "actual_action": "click",
+        "actual_label": "Large +$2.16 Hand-Tossed Pizza \u2022 Classic Marinara \u2022 Pizza Cheese \u2022 Whole \u2022 Pepperoni \u2022 Whole \u2022 Garlic-Parm Hut Blend\u2122 Edit selection",
+        "expected_action": "click",
+        "expected_label": "Large +$2.88 Hand-Tossed Pizza \u2022 Classic Marinara \u2022 Pizza Cheese \u2022 Whole \u2022 Garlic-Parm Hut Blend\u2122 Edit selection",
+        "matched": false,
+        "trace_index": 2
+      },
+      {
+        "actual_action": "stop",
+        "actual_label": "",
+        "expected_action": "stop",
+        "expected_label": "",
+        "matched": true,
+        "trace_index": 3
+      }
+    ],
+    "stop_reason": "stop",
+    "student_model": "mistral:7b-instruct",
+    "teacher_trace_hash": "970dd6655eaf3766dda25a0695d6f64f01a2018207ac84a0303321b9cadcff92",
+    "terminal_rule_followed": true,
+    "trace_complete": false,
+    "transaction_progression_executions": 0
+  },
+  "generated_ts": 1790448448,
+  "proof_id": "agency_live_teacher_item_mutation_v0",
+  "raw": {
+    "adapted_packet_sequence_complete": false,
+    "report_hash": "85950368d94c97e764ab9c76d8f94292a4d77c0d1fda2c14ffcb2b640c859414",
+    "required_selected_terms": [
+      "pepperoni",
+      "large"
+    ],
+    "selected_term_evidence_complete": false,
+    "sequence": [
+      {
+        "actual_action": "scroll",
+        "actual_label": "",
+        "expected_action": "click",
+        "expected_label": "View Menu",
+        "matched": false,
+        "trace_index": 0
+      },
+      {
+        "actual_action": "scroll",
+        "actual_label": "",
+        "expected_action": "click",
+        "expected_label": "Cheese Pizza $13.91",
+        "matched": false,
+        "trace_index": 1
+      },
+      {
+        "actual_action": "scroll",
+        "actual_label": "",
+        "expected_action": "click",
+        "expected_label": "Large +$2.88 Hand-Tossed Pizza \u2022 Classic Marinara \u2022 Pizza Cheese \u2022 Whole \u2022 Garlic-Parm Hut Blend\u2122 Edit selection",
+        "matched": false,
+        "trace_index": 2
+      },
+      {
+        "actual_action": "scroll",
+        "actual_label": "",
+        "expected_action": "stop",
+        "expected_label": "",
+        "matched": false,
+        "trace_index": 3
+      }
+    ],
+    "stop_reason": "max_steps",
+    "student_model": "mistral:7b-instruct",
+    "teacher_trace_hash": "",
+    "terminal_rule_followed": false,
+    "trace_complete": false,
+    "transaction_progression_executions": 0
+  },
+  "teacher": {
+    "compiled_rules": [
+      {
+        "action": "click",
+        "page_class": "doordash",
+        "target_domain": "doordash.com",
+        "target_href": "https://www.doordash.com/store/pizza-hut-dallas-23326139/",
+        "target_kind": "click",
+        "target_label": "View Menu",
+        "teacher_reason": "Selecting 'View Menu' to explore the menu of Pizza Hut in Dallas.",
+        "text": "",
+        "trace_index": 0
+      },
+      {
+        "action": "click",
+        "page_class": "doordash",
+        "target_domain": "",
+        "target_href": "",
+        "target_kind": "click",
+        "target_label": "Cheese Pizza $13.91",
+        "teacher_reason": "Selecting 'Cheese Pizza $13.91' to find the large size option.",
+        "text": "",
+        "trace_index": 1
+      },
+      {
+        "action": "click",
+        "page_class": "doordash",
+        "target_domain": "",
+        "target_href": "",
+        "target_kind": "click",
+        "target_label": "Large +$2.88 Hand-Tossed Pizza \u2022 Classic Marinara \u2022 Pizza Cheese \u2022 Whole \u2022 Garlic-Parm Hut Blend\u2122 Edit selection",
+        "teacher_reason": "Selecting the large size option for the cheese pizza as per the goal.",
+        "text": "",
+        "trace_index": 2
+      },
+      {
+        "action": "stop",
+        "page_class": "doordash",
+        "target_domain": "",
+        "target_href": "",
+        "target_kind": "",
+        "target_label": "",
+        "teacher_reason": "The large size for the cheese pizza has been selected as per the goal. Stopping before adding it to the cart or proceeding to checkout.",
+        "text": "",
+        "trace_index": 3
+      }
+    ],
+    "model": "qwen2.5:32b",
+    "report_hash": "970dd6655eaf3766dda25a0695d6f64f01a2018207ac84a0303321b9cadcff92"
+  }
+}

@@ -253,6 +253,36 @@ def test_goal_adapted_result_can_rebind_teacher_domain_as_platform_slot():
     assert packet[0]["destination_domain_mode"] == "goal_adapted_external_destination"
 
 
+def test_goal_adapted_affordance_does_not_replay_changed_item_slot():
+    report = {
+        "fortress_id": "live",
+        "student_model": "teacher",
+        "goal": "Select a cheese pizza",
+        "rows": [
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/example",
+                    "candidates": [_candidate(5, "Cheese Pizza $12").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c005", "text": "", "reason": "item"},
+                "execution": {"executed": True},
+            }
+        ],
+    }
+    compiled = compile_live_teacher_trace(report)
+    packet = retrieve_live_teacher_packet(
+        compiled_trace=compiled,
+        observation={
+            "url": "https://www.doordash.com/store/example",
+            "candidates": [_candidate(5, "Cheese Pizza $12"), _candidate(6, "Pepperoni Pizza $14")],
+        },
+        history=[],
+        goal="Select a pepperoni pizza",
+    )
+    assert packet[0]["binding_mode"] == "goal_adapted_affordance"
+    assert packet[0]["required_next_action"]["candidate_id"] == "c006"
+
+
 def test_bank_candidate_id_canonicalizer_only_restores_equivalent_zero_padding():
     packet = [{"required_next_action": {"candidate_id": "c039"}}]
     normalized, changed = canonicalize_bank_candidate_id(
