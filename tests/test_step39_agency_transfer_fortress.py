@@ -25,11 +25,15 @@ def _teacher_payload() -> dict:
         "train_decisions": [
             {"case_id": "train_alias_pizza_pie", "action_type": "tap", "target_id": "target-plus", "why": "scoped match"},
             {"case_id": "train_missing_quantity_affordance", "action_type": "stop", "target_id": "", "why": "no repair"},
+            {"case_id": "train_alias_pepperoni_pie", "action_type": "tap", "target_id": "target-plus", "why": "scoped match"},
+            {"case_id": "train_missing_affordance_without_add", "action_type": "stop", "target_id": "", "why": "no repair"},
         ],
         "rules": [
             {
                 "family": FAMILY_ALIAS,
                 "observations": ["requested item and quantity", "candidate item labels", "numbers by semantic role"],
+                "required_affordances": ["Increase quantity for requested item"],
+                "absent_affordances": [],
                 "comparison": "match food identity and modifiers; compare only quantity-role numbers",
                 "action_type": "tap",
                 "target_selector": "requested item's increment control",
@@ -40,6 +44,8 @@ def _teacher_payload() -> dict:
             {
                 "family": FAMILY_BOUNDARY,
                 "observations": ["quantity mismatch", "visible candidate affordances"],
+                "required_affordances": [],
+                "absent_affordances": ["Increase quantity for requested item"],
                 "comparison": "test whether any visible candidate can change or verify quantity",
                 "action_type": "stop",
                 "target_selector": "none",
@@ -110,12 +116,12 @@ def test_teacher_sees_only_train_states_and_must_clear_them():
     content = messages[1].content
     assert "train_alias_pizza_pie" in content
     assert "train_missing_quantity_affordance" in content
+    assert "train_alias_pepperoni_pie" in content
+    assert "train_missing_affordance_without_add" in content
     assert "holdout_" not in content
     artifact = extract_teacher_rules(client=FakeTeacher(), model="teacher")
-    assert artifact["train_clearance"] == {
-        "train_alias_pizza_pie": True,
-        "train_missing_quantity_affordance": True,
-    }
+    assert artifact["train_clearance"]
+    assert all(artifact["train_clearance"].values())
     assert set(artifact["rules"]) == {FAMILY_ALIAS, FAMILY_BOUNDARY}
 
 

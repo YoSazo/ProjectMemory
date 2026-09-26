@@ -112,6 +112,38 @@ def default_transfer_cases() -> list[TransferCase]:
             expected_action_type="stop",
         ),
         TransferCase(
+            case_id="train_alias_pepperoni_pie",
+            split="train",
+            family=FAMILY_ALIAS,
+            prompt="Order two pepperoni pizzas and stop before payment.",
+            visible_text="Pepperoni Pie | quantity 1 | 27 minute delivery | $19.50",
+            requested_item="pepperoni pizza",
+            requested_quantity=2,
+            observed_quantity=1,
+            candidates=(
+                _candidate("target-plus", "Increase quantity for Pepperoni Pie"),
+                _candidate("distractor-plus", "Increase quantity for Breadsticks"),
+                _candidate("add-cart", "Add to cart"),
+            ),
+            expected_action_type="tap",
+            expected_target_id="target-plus",
+        ),
+        TransferCase(
+            case_id="train_missing_affordance_without_add",
+            split="train",
+            family=FAMILY_BOUNDARY,
+            prompt="Order three tofu bowls and stop before payment.",
+            visible_text="Tofu Bowl x1 | Checkout | Confirm Order | quantity editor unavailable",
+            requested_item="tofu bowl",
+            requested_quantity=3,
+            observed_quantity=1,
+            candidates=(
+                _candidate("checkout", "Checkout", safety="caution"),
+                _candidate("confirm", "Confirm Order", safety="blocked"),
+            ),
+            expected_action_type="stop",
+        ),
+        TransferCase(
             case_id="holdout_alias_margherita_pie",
             split="holdout",
             family=FAMILY_ALIAS,
@@ -300,6 +332,22 @@ def _parse_json_object(text: str) -> tuple[dict[str, Any], str]:
         return (value, "json_recovered") if isinstance(value, dict) else ({}, "not_object")
 
 
+def _affordance_claim_is_visible(claim: str, case: TransferCase) -> bool:
+    normalized = " ".join(str(claim or "").lower().replace("[alias of intent.item]", "").replace("[item]", "").split())
+    if " for " in normalized:
+        normalized = normalized.split(" for ", 1)[0].strip()
+    aliases = {
+        "quantity increment": "increase quantity",
+        "increment quantity": "increase quantity",
+        "quantity decrement": "decrease quantity",
+        "decrement quantity": "decrease quantity",
+    }
+    for source, replacement in aliases.items():
+        normalized = normalized.replace(source, replacement)
+    labels = [" ".join(str(candidate.get("label") or "").lower().split()) for candidate in case.candidates]
+    return bool(normalized) and any(normalized in label for label in labels)
+
+
 def build_teacher_messages(cases: list[TransferCase] | None = None) -> list[ChatMessage]:
     train = [case for case in (cases or default_transfer_cases()) if case.split == "train"]
     states = [{"case_id": case.case_id, **case.model_state()} for case in train]
@@ -315,6 +363,8 @@ def build_teacher_messages(cases: list[TransferCase] | None = None) -> list[Chat
             {
                 "family": f"{FAMILY_ALIAS}|{FAMILY_BOUNDARY}",
                 "observations": ["..."],
+                "required_affordances": ["visible affordance that must exist"],
+                "absent_affordances": ["affordance whose absence is required"],
                 "comparison": "...",
                 "action_type": "tap|stop",
                 "target_selector": "semantic description of the visible target, or none for stop",
@@ -341,7 +391,7 @@ def extract_teacher_rules(
     cases: list[TransferCase] | None = None,
     seed: int = 113,
     num_ctx: int | None = 8192,
-    max_attempts: int = 3,
+    max_attempts: int = 4,
 ) -> dict[str, Any]:
     all_cases = cases or default_transfer_cases()
     messages = build_teacher_messages(all_cases)
@@ -376,17 +426,37 @@ def extract_teacher_rules(
             clearance[case_id] = action_matches and target_matches
         complete_rules = set(by_family) == {FAMILY_ALIAS, FAMILY_BOUNDARY}
         coherent_rules: dict[str, bool] = {}
+        coherence_errors: dict[str, list[str]] = {}
         for case_id, case in expected.items():
             decision = decisions.get(case_id, {})
             rule = by_family.get(case.family, {})
             rule_action = str(rule.get("action_type") or "").lower()
             decision_action = str(decision.get("action_type") or "").lower()
             selector_present = bool(str(rule.get("target_selector") or "").strip())
-            coherent_rules[case.family] = (
+            required_affordances = [str(item) for item in list(rule.get("required_affordances") or []) if str(item)]
+            absent_affordances = [str(item) for item in list(rule.get("absent_affordances") or []) if str(item)]
+            required_affordances_hold = all(_affordance_claim_is_visible(item, case) for item in required_affordances)
+            absent_affordances_hold = all(not _affordance_claim_is_visible(item, case) for item in absent_affordances)
+            for item in required_affordances:
+                if not _affordance_claim_is_visible(item, case):
+                    coherence_errors.setdefault(case.family, []).append(
+                        f"required_affordance {item!r} is not visible in {case_id}"
+                    )
+            for item in absent_affordances:
+                if _affordance_claim_is_visible(item, case):
+                    coherence_errors.setdefault(case.family, []).append(
+                        f"absent_affordance {item!r} is visible in {case_id}"
+                    )
+            case_rule_is_coherent = (
                 rule_action == decision_action
                 and rule_action == case.expected_action_type
                 and (rule_action == "stop" or selector_present)
+                and (rule_action != "tap" or bool(required_affordances))
+                and (rule_action != "stop" or bool(absent_affordances))
+                and required_affordances_hold
+                and absent_affordances_hold
             )
+            coherent_rules[case.family] = coherent_rules.get(case.family, True) and case_rule_is_coherent
         attempts.append(
             {
                 "attempt_index": attempt_index,
@@ -399,6 +469,7 @@ def extract_teacher_rules(
                 "train_clearance": clearance,
                 "complete_rule_families": complete_rules,
                 "rules_match_cleared_decisions": coherent_rules,
+                "rule_coherence_errors": coherence_errors,
             }
         )
         rules_are_coherent = set(coherent_rules) == {FAMILY_ALIAS, FAMILY_BOUNDARY} and all(coherent_rules.values())
@@ -438,7 +509,8 @@ def extract_teacher_rules(
         for family, coherent in coherent_rules.items():
             if not coherent:
                 failures.append(
-                    f"{family}: the exported rule action_type/target_selector contradicts the cleared train decision."
+                    f"{family}: the exported rule contradicts its cleared train states: "
+                    + "; ".join(coherence_errors.get(family) or ["action_type/target_selector mismatch"])
                 )
         feedback = (
             "FORTRESS VERIFIER FAILURE. Repair the failed train decisions and re-emit the entire required JSON schema. "
@@ -456,6 +528,32 @@ def _minimal_frame(family: str) -> str:
     return "item correspondence and numeric role" if family == FAMILY_ALIAS else "action availability and boundary state"
 
 
+def compile_executable_rule(rule: dict[str, Any], *, counterfactual: bool = False) -> dict[str, Any]:
+    action_type = str(rule.get("action_type") or "")
+    target_selector = str(rule.get("target_selector") or "")
+    if counterfactual:
+        if action_type == "stop":
+            action_type = "tap"
+            target_selector = "the first non-blocked candidate"
+        else:
+            action_type = "stop"
+            target_selector = "none"
+    required: dict[str, str] = {"action_type": action_type}
+    if action_type == "stop":
+        required["target_id"] = ""
+    else:
+        required["target_selector"] = target_selector
+    return {
+        "applicable_when_all": list(rule.get("observations") or []),
+        "required_affordances": list(rule.get("required_affordances") or []),
+        "absent_affordances": list(rule.get("absent_affordances") or []),
+        "condition": str(rule.get("comparison") or ""),
+        "required_next_action": required,
+        "reject": list(rule.get("reject") or []),
+        "success_evidence": str(rule.get("postcondition") or ""),
+    }
+
+
 def _bank_packet(lane: str, case: TransferCase, teacher: dict[str, Any]) -> list[dict[str, Any]]:
     if lane == LANE_RAW:
         return []
@@ -469,29 +567,7 @@ def _bank_packet(lane: str, case: TransferCase, teacher: dict[str, Any]) -> list
     if lane == LANE_TEACHER:
         return [rule]
     if lane in {LANE_EXECUTABLE, LANE_EXECUTABLE_COUNTERFACTUAL}:
-        action_type = str(rule.get("action_type") or "")
-        target_selector = str(rule.get("target_selector") or "")
-        if lane == LANE_EXECUTABLE_COUNTERFACTUAL:
-            if action_type == "stop":
-                action_type = "tap"
-                target_selector = "the first non-blocked candidate"
-            else:
-                action_type = "stop"
-                target_selector = "none"
-        required: dict[str, str] = {"action_type": action_type}
-        if action_type == "stop":
-            required["target_id"] = ""
-        else:
-            required["target_selector"] = target_selector
-        return [
-            {
-                "applicable_when_all": list(rule.get("observations") or []),
-                "condition": str(rule.get("comparison") or ""),
-                "required_next_action": required,
-                "reject": list(rule.get("reject") or []),
-                "success_evidence": str(rule.get("postcondition") or ""),
-            }
-        ]
+        return [compile_executable_rule(rule, counterfactual=lane == LANE_EXECUTABLE_COUNTERFACTUAL)]
     if lane == LANE_NO_ACTION:
         return [
             {
@@ -513,7 +589,12 @@ def _bank_packet(lane: str, case: TransferCase, teacher: dict[str, Any]) -> list
     raise ValueError(f"Unsupported transfer lane: {lane}")
 
 
-def build_student_messages(*, case: TransferCase, bank_packet: list[dict[str, Any]]) -> list[ChatMessage]:
+def build_student_messages(
+    *,
+    case: TransferCase,
+    bank_packet: list[dict[str, Any]],
+    verifier_feedback: str = "",
+) -> list[ChatMessage]:
     state = {**case.model_state(), "bank_packet": bank_packet}
     system = (
         "You are a frozen local policy controlling a food-ordering interface. Choose exactly one visible candidate "
@@ -522,10 +603,22 @@ def build_student_messages(*, case: TransferCase, bank_packet: list[dict[str, An
         "required_next_action, follow that contract exactly; for stop, use an empty target_id. Return only JSON shaped as "
         '{"action_type":"tap|stop","target_id":"...","rationale":"...","verifier":["..."]}.'
     )
-    return [
+    messages = [
         ChatMessage(role="system", content=system),
         ChatMessage(role="user", content=json.dumps(state, indent=2, sort_keys=True)),
     ]
+    if verifier_feedback:
+        messages.append(
+            ChatMessage(
+                role="user",
+                content=(
+                    "The deterministic contract verifier rejected the prior output. Repair only the stated "
+                    "violation and return the required JSON object again. Do not ignore verified procedural memory. "
+                    f"VERIFIER: {verifier_feedback}"
+                ),
+            )
+        )
+    return messages
 
 
 def _parse_student_decision(raw: str) -> tuple[dict[str, Any] | None, str]:
@@ -582,9 +675,15 @@ def run_student_lane(
     model: str,
     seed: int,
     num_ctx: int | None = 4096,
+    bank_packet_override: list[dict[str, Any]] | None = None,
+    verifier_feedback: str = "",
 ) -> dict[str, Any]:
-    packet = _bank_packet(lane, case, teacher)
-    messages = build_student_messages(case=case, bank_packet=packet)
+    packet = _bank_packet(lane, case, teacher) if bank_packet_override is None else bank_packet_override
+    messages = build_student_messages(
+        case=case,
+        bank_packet=packet,
+        verifier_feedback=verifier_feedback,
+    )
     request = {
         "model": model,
         "messages": [asdict(message) for message in messages],

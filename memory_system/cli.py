@@ -158,6 +158,11 @@ from .fortresses.agency_transfer_fortress import (
     write_sanitized_transfer_proof as write_sanitized_agency_transfer_proof,
     write_transfer_artifacts as write_agency_transfer_artifacts,
 )
+from .fortresses.agency_retrieval_fortress import (
+    RETRIEVAL_LANES as AGENCY_RETRIEVAL_LANES,
+    run_retrieval_proof as run_agency_retrieval_proof,
+    write_retrieval_artifacts as write_agency_retrieval_artifacts,
+)
 from .fortresses.meta_fortress import GlobalTransmutationLedger
 from .ollama_client import ChatMessage, UniversalLLMClient
 from .terminal_workbench import serve_terminal_workbench
@@ -1156,6 +1161,23 @@ def _handle_agency_transfer_proof(args: argparse.Namespace) -> int:
             seed=args.teacher_seed,
             num_ctx=args.teacher_num_ctx,
         )
+    if args.extract_only:
+        out_dir = Path(args.out_dir).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        teacher_path = out_dir / "teacher_extraction.json"
+        teacher_path.write_text(json.dumps(teacher, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        summary = {
+            "teacher_model": teacher.get("teacher_model", ""),
+            "teacher_calls": teacher.get("teacher_calls", 0),
+            "train_clearance": teacher.get("train_clearance", {}),
+            "raw_response_hash": teacher.get("raw_response_hash", ""),
+            "teacher_extraction": str(teacher_path),
+        }
+        if args.json:
+            _print_json(summary)
+        else:
+            print(json.dumps(summary, indent=2, sort_keys=True))
+        return 0
     report = run_agency_transfer_proof(
         teacher=teacher,
         student_client=student_client,
@@ -1181,6 +1203,48 @@ def _handle_agency_transfer_proof(args: argparse.Namespace) -> int:
         "trials_per_holdout": report.get("trials_per_holdout", 0),
         "success_counts": report.get("success_counts", {}),
         "family_counts": report.get("family_counts", []),
+        "paired_discordance": report.get("paired_discordance", []),
+        "authenticity": report.get("authenticity", {}),
+        "artifacts": artifacts,
+    }
+    if args.json:
+        _print_json(summary)
+    else:
+        print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _handle_agency_retrieval_proof(args: argparse.Namespace) -> int:
+    teacher = json.loads(Path(args.teacher_artifact).expanduser().read_text(encoding="utf-8"))
+    student_client = UniversalLLMClient(provider="ollama", base_url=args.student_base_url)
+    report = run_agency_retrieval_proof(
+        teacher=teacher,
+        student_client=student_client,
+        student_model=args.student_model,
+        trials=args.trials,
+        seed_base=args.seed_base,
+        num_ctx=args.student_num_ctx,
+        lanes=tuple(args.lane or AGENCY_RETRIEVAL_LANES),
+    )
+    artifacts = write_agency_retrieval_artifacts(report=report, out_dir=args.out_dir)
+    if args.proof_dir:
+        artifacts.update(
+            {
+                f"proof_{key}": value
+                for key, value in write_agency_retrieval_artifacts(
+                    report=report,
+                    out_dir=args.proof_dir,
+                    sanitized=True,
+                ).items()
+            }
+        )
+    summary = {
+        "student_model": report.get("student_model", ""),
+        "success_counts": report.get("success_counts", {}),
+        "first_pass_success_counts": report.get("first_pass_success_counts", {}),
+        "model_proposal_accuracy": report.get("model_proposal_accuracy", 0.0),
+        "retrieval_accuracy": report.get("retrieval_accuracy", 0.0),
+        "retrieval_by_family": report.get("retrieval_by_family", {}),
         "paired_discordance": report.get("paired_discordance", []),
         "authenticity": report.get("authenticity", {}),
         "artifacts": artifacts,
@@ -2957,6 +3021,7 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_transfer.add_argument("--teacher-base-url", default=os.environ.get("MEMLA_TEACHER_BASE_URL", "http://127.0.0.1:11434"))
     agency_transfer.add_argument("--student-base-url", default=os.environ.get("MEMLA_STUDENT_BASE_URL", "http://127.0.0.1:11434"))
     agency_transfer.add_argument("--teacher-artifact", default="", help="Reuse a prior teacher_extraction.json instead of calling the teacher.")
+    agency_transfer.add_argument("--extract-only", action="store_true", help="Extract and verify teacher rules without running student lanes.")
     agency_transfer.add_argument("--teacher-seed", type=int, default=113)
     agency_transfer.add_argument("--teacher-num-ctx", type=int, default=8192)
     agency_transfer.add_argument("--student-num-ctx", type=int, default=4096)
@@ -2979,6 +3044,27 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_transfer.add_argument("--proof-dir", default="", help="Optional sanitized, git-reviewable proof directory.")
     agency_transfer.add_argument("--json", action="store_true")
     agency_transfer.set_defaults(func=_handle_agency_transfer_proof)
+
+    agency_retrieval = agency_sub.add_parser(
+        "retrieval-proof",
+        help="Test Mistral selecting opaque teacher rules before teacher-free action execution.",
+    )
+    agency_retrieval.add_argument("--teacher-artifact", required=True)
+    agency_retrieval.add_argument("--student-model", default="mistral:7b-instruct")
+    agency_retrieval.add_argument("--student-base-url", default=os.environ.get("MEMLA_STUDENT_BASE_URL", "http://127.0.0.1:11434"))
+    agency_retrieval.add_argument("--student-num-ctx", type=int, default=4096)
+    agency_retrieval.add_argument("--trials", type=int, default=3)
+    agency_retrieval.add_argument("--seed-base", type=int, default=13000)
+    agency_retrieval.add_argument(
+        "--lane",
+        action="append",
+        choices=list(AGENCY_RETRIEVAL_LANES),
+        default=[],
+    )
+    agency_retrieval.add_argument("--out-dir", default="memla_reports/agency_retrieval")
+    agency_retrieval.add_argument("--proof-dir", default="")
+    agency_retrieval.add_argument("--json", action="store_true")
+    agency_retrieval.set_defaults(func=_handle_agency_retrieval_proof)
 
     research_parser = subparsers.add_parser("research", help="Run bounded deep-research loop capture and benchmarks.")
     research_sub = research_parser.add_subparsers(dest="research_command")
