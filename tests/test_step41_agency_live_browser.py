@@ -179,6 +179,46 @@ def test_goal_adapted_result_preserves_teacher_destination_domain():
     )
     assert compiled["rules"][0]["target_domain"] == "doordash.com"
     assert packet[0]["required_next_action"]["candidate_id"] == "c002"
+    assert packet[0]["destination_domain_mode"] == "preserved_teacher_domain"
+
+
+def test_goal_adapted_result_can_rebind_teacher_domain_as_platform_slot():
+    report = {
+        "fortress_id": "live",
+        "student_model": "teacher",
+        "goal": "Find Domino's DoorDash page for Chicago",
+        "rows": [
+            {
+                "before": {
+                    "url": "https://www.google.com/search?q=dominos",
+                    "candidates": [
+                        _candidate(
+                            8,
+                            "Domino's Chicago DoorDash https://www.doordash.com/city/chicago",
+                            href="https://www.doordash.com/city/chicago",
+                        ).public()
+                    ],
+                },
+                "decision": {"action": "click", "candidate_id": "c008", "text": "", "reason": "result"},
+                "execution": {"executed": True},
+            }
+        ],
+    }
+    compiled = compile_live_teacher_trace(report)
+    maps = _candidate(1, "Maps Taco Bell Uber Eats Houston Texas", href="https://www.google.com/maps?q=taco+bell")
+    uber = _candidate(
+        2,
+        "Taco Bell Houston Uber Eats https://www.ubereats.com/store/taco-bell",
+        href="https://www.ubereats.com/store/taco-bell",
+    )
+    packet = retrieve_live_teacher_packet(
+        compiled_trace=compiled,
+        observation={"url": "https://www.google.com/search?q=taco", "candidates": [maps, uber]},
+        history=[],
+        goal="Find Taco Bell Uber Eats page for Houston Texas",
+    )
+    assert packet[0]["required_next_action"]["candidate_id"] == "c002"
+    assert packet[0]["destination_domain_mode"] == "goal_adapted_external_destination"
 
 
 def test_bank_candidate_id_canonicalizer_only_restores_equivalent_zero_padding():
@@ -275,3 +315,4 @@ def test_live_transfer_proof_requires_destination_host_for_mutated_tasks():
     assert proof["raw_successes"] == 0
     assert proof["bank_successes"] == 1
     assert proof["authenticity"]["trials_are_independent_task_cases"] is True
+    assert proof["authenticity"]["includes_cross_platform_mutation"] is False

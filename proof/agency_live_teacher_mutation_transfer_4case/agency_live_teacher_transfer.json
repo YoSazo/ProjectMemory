@@ -1,0 +1,490 @@
+{
+  "authenticity": {
+    "all_bank_runs_use_teacher_trace": true,
+    "all_executed_actions_safe": true,
+    "all_raw_runs_have_no_teacher_trace": true,
+    "includes_cross_platform_mutation": true,
+    "seed_replications_are_independent_cases": false,
+    "teacher_calls_in_student_runs": 0,
+    "trials_are_independent_task_cases": true
+  },
+  "bank_reports": [
+    {
+      "final_url": "https://www.doordash.com/city/dallas-tx/b/pizza-hut-351380?srsltid=AU7gw4UUU7R0kZk5rMw8BdYf-JRIU3tU8lo2zaube7O0NiQUmyRDzTuH",
+      "goal": "Find the Pizza Hut DoorDash page for Dallas, Texas and stop before adding anything or checkout.",
+      "report_hash": "df2f4167eb90ce8cbe7c8c028cbbc285cfc7b4c35b6ad9461c3e465f7c0b7968",
+      "required_final_host": "doordash.com",
+      "required_final_url_terms": [
+        "pizza-hut",
+        "dallas-tx"
+      ],
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": true,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.google.com/search?q=Pizza+Hut+DoorDash+Dallas%2C+Texas&sca_esv=700c7e79aa3b521d&sxsrf=APpeQnv-UmQ5zFMVQ-gI39Z1H8cD4LlN2w%3A1790439094856&source=hp&ei=tu63auXBMqPVruEP_Y-s2Q0&iflsig=ABILxe8AAAAAarf8xuN6Tm2-1cnGgA3UKnVbA9Rh9eXC&ved=0ahUKEwjl9PSx0YyXAxWjqisGHf0HK9sQ4dUDCCI&oq=Pizza+Hut+DoorDash+Dallas%2C+Texas&gs_lp=Egdnd3Mtd2l6IiBQaXp6YSBIdXQgRG9vckRhc2ggRGFsbGFzLCBUZXhhczIFECEYoAEyBRAhGKABMgUQIRigATIFECEYoAEyBRAhGKsCSJZTUABYAHAAeACQAQCYAWWgAWWqAQMwLjG4AQzIAQD4AQGYAgGgAn-YAwCSBwMwLjGgB4wEsgcDMC4xuAd_wgcDMy0xyAcPgAgB&sclient=gws-wiz",
+          "bank_packet_present": true,
+          "candidate_id": "c039",
+          "candidate_id_canonicalized": true,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.doordash.com/city/dallas-tx/b/pizza-hut-351380?srsltid=AU7gw4UUU7R0kZk5rMw8BdYf-JRIU3tU8lo2zaube7O0NiQUmyRDzTuH",
+          "bank_packet_present": true,
+          "candidate_id": "c161",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        }
+      ],
+      "steps_executed": 3,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": true,
+      "teacher_trace_hash": "7c6861a8776d7c2e642fb2412ab879f5d5ab6c67a64369fcf05c206961968016",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.doordash.com/city/houston-tx/b/taco-bell-4815/?srsltid=AU7gw4U2G5FTe2wPf2gDuL2XboAGHuywlwrFvTy0eRW6i7gWsKBawnXq",
+      "goal": "Find the Taco Bell DoorDash page for Houston, Texas and stop before adding anything or checkout.",
+      "report_hash": "bb476c3176c10ec944d12e8c079c1fa4e2efed3fb68f5894263041b68371b53e",
+      "required_final_host": "doordash.com",
+      "required_final_url_terms": [
+        "taco-bell",
+        "houston-tx"
+      ],
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": true,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.google.com/search?q=Taco+Bell+DoorDash+Houston%2C+Texas&sca_esv=700c7e79aa3b521d&sxsrf=APpeQnu913QIjHPbDk2DoVn0RJ9Kxge0Hw%3A1790439202076&source=hp&ei=Iu-3apz9AtPAruEPkNHxyAY&iflsig=ABILxe8AAAAAarf9MhrZr-1lGlKgAhEGx7RCF7mjm7Xs&ved=0ahUKEwicloXl0YyXAxVToCsGHZBoHGkQ4dUDCCI&oq=Taco+Bell+DoorDash+Houston%2C+Texas&gs_lp=Egdnd3Mtd2l6IiFUYWNvIEJlbGwgRG9vckRhc2ggSG91c3RvbiwgVGV4YXMyBRAhGKABMgUQIRigATIFECEYoAEyBRAhGKABMgUQIRirAkiRTFAAWABwAHgAkAEAmAFeoAFeqgEBMbgBDMgBAPgBAZgCAaACZ5gDAJIHAzAuMaAHkwSyBwMwLjG4B2fCBwMyLTHIBwWACAE&sclient=gws-wiz",
+          "bank_packet_present": true,
+          "candidate_id": "c039",
+          "candidate_id_canonicalized": true,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.doordash.com/city/houston-tx/b/taco-bell-4815/?srsltid=AU7gw4U2G5FTe2wPf2gDuL2XboAGHuywlwrFvTy0eRW6i7gWsKBawnXq",
+          "bank_packet_present": true,
+          "candidate_id": "c196",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        }
+      ],
+      "steps_executed": 3,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": true,
+      "teacher_trace_hash": "7c6861a8776d7c2e642fb2412ab879f5d5ab6c67a64369fcf05c206961968016",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.doordash.com/city/phoenix-az/b/walgreens-434024/?srsltid=AU7gw4X0uS3jHnM_yDRixsLcx_PuiYogpifTzYNojnRO9YHroZyZHvKY",
+      "goal": "Find the Walgreens DoorDash page for Phoenix, Arizona and stop before adding anything or checkout.",
+      "report_hash": "0fa8580752b63279ffc36d1a21f9aeb4859d9bd3610cf1eba71319c38aa9b217",
+      "required_final_host": "doordash.com",
+      "required_final_url_terms": [
+        "walgreens",
+        "phoenix-az"
+      ],
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": true,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.google.com/search?q=Walgreens+DoorDash+Phoenix+Arizona&sca_esv=700c7e79aa3b521d&sxsrf=APpeQnss5C46XlqYMYObs8jL7ZDTyCyHug%3A1790439312372&source=hp&ei=kO-3avXHFPScptQPwfDCiAY&iflsig=ABILxe8AAAAAarf9oAaByLOfN5Q9KkEQf2HrB0II0k2W&ved=0ahUKEwj1z9CZ0oyXAxV0jokEHUG4EGEQ4dUDCCI&oq=Walgreens+DoorDash+Phoenix+Arizona&gs_lp=Egdnd3Mtd2l6IiJXYWxncmVlbnMgRG9vckRhc2ggUGhvZW5peCBBcml6b25hMgUQIRigATIFECEYoAEyBRAhGKABMgUQIRigATIFECEYoAEyBRAhGKsCSIFNUABYAHAAeACQAQCYAS-gAS-qAQExuAEMyAEA-AEBmAIBoAJDmAMAkgcBMaAHgAWyBwExuAdDwgcDMy0xyAcIgAgB&sclient=gws-wiz",
+          "bank_packet_present": true,
+          "candidate_id": "c041",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.doordash.com/city/phoenix-az/b/walgreens-434024/?srsltid=AU7gw4X0uS3jHnM_yDRixsLcx_PuiYogpifTzYNojnRO9YHroZyZHvKY",
+          "bank_packet_present": true,
+          "candidate_id": "c172",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        }
+      ],
+      "steps_executed": 3,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": true,
+      "teacher_trace_hash": "7c6861a8776d7c2e642fb2412ab879f5d5ab6c67a64369fcf05c206961968016",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.ubereats.com/brand-city/houston-tx/taco-bell?srsltid=AU7gw4U1XKB4si_2zjV0-M7cZxDGYfsmCmPN75H98o8sRa33Z1z9GIzD",
+      "goal": "Find the Taco Bell Uber Eats page for Houston, Texas and stop before adding anything or checkout.",
+      "report_hash": "d558f90a46c2e2c27e096cfaa267a18726acfd6268b928da49ecd92ac9654aed",
+      "required_final_host": "ubereats.com",
+      "required_final_url_terms": [
+        "taco-bell",
+        "houston-tx"
+      ],
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": true,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.google.com/search?q=Taco+Bell+Uber+Eats+Houston%2C+Texas&sca_esv=700c7e79aa3b521d&sxsrf=APpeQnvJC5-_kVM2U68yW6sSzI_H1EKCYw%3A1790439580912&source=hp&ei=nPC3avnWNaXcruEPoZ_68Ag&iflsig=ABILxe8AAAAAarf-rOy68dvt2xFwZdikYp8hifXJzxo_&ved=0ahUKEwj5lNeZ04yXAxUlrisGHaGPHo4Q4dUDCCI&oq=Taco+Bell+Uber+Eats+Houston%2C+Texas&gs_lp=Egdnd3Mtd2l6IiJUYWNvIEJlbGwgVWJlciBFYXRzIEhvdXN0b24sIFRleGFzMgUQIRigATIFECEYoAEyBRAhGKABMgUQIRigATIFECEYqwJIt1NQAFgAcAB4AJABAJgBK6ABK6oBATG4AQzIAQD4AQGYAgGgAjaYAwCSBwExoAeHBLIHATG4BzbCBwMyLTHIBwWACAE&sclient=gws-wiz",
+          "bank_packet_present": true,
+          "candidate_id": "c039",
+          "candidate_id_canonicalized": true,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.ubereats.com/brand-city/houston-tx/taco-bell?srsltid=AU7gw4U1XKB4si_2zjV0-M7cZxDGYfsmCmPN75H98o8sRa33Z1z9GIzD",
+          "bank_packet_present": true,
+          "candidate_id": "c199",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        }
+      ],
+      "steps_executed": 3,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": true,
+      "teacher_trace_hash": "7c6861a8776d7c2e642fb2412ab879f5d5ab6c67a64369fcf05c206961968016",
+      "unsafe_executions": 0
+    }
+  ],
+  "bank_successes": 4,
+  "generated_ts": 1790440206,
+  "paired_trials": 4,
+  "pairs": [
+    {
+      "bank_report_hash": "df2f4167eb90ce8cbe7c8c028cbbc285cfc7b4c35b6ad9461c3e465f7c0b7968",
+      "bank_success": true,
+      "pair_index": 0,
+      "raw_report_hash": "fa14f4dadbc3dfa95e23ef4ea7669eba657e568d61d8dc746a6fc2937e4de12a",
+      "raw_success": false
+    },
+    {
+      "bank_report_hash": "bb476c3176c10ec944d12e8c079c1fa4e2efed3fb68f5894263041b68371b53e",
+      "bank_success": true,
+      "pair_index": 1,
+      "raw_report_hash": "6fca5433150bfd6dc900d2d291626611a24c5c69f2ffd26822fe5f225ebac6ac",
+      "raw_success": false
+    },
+    {
+      "bank_report_hash": "0fa8580752b63279ffc36d1a21f9aeb4859d9bd3610cf1eba71319c38aa9b217",
+      "bank_success": true,
+      "pair_index": 2,
+      "raw_report_hash": "cd6af7ff0d3f996fcf9b2183c81dc417c4d74cb42e6167967fbc9188f03e7d68",
+      "raw_success": false
+    },
+    {
+      "bank_report_hash": "d558f90a46c2e2c27e096cfaa267a18726acfd6268b928da49ecd92ac9654aed",
+      "bank_success": true,
+      "pair_index": 3,
+      "raw_report_hash": "2ea2269d10d0f7a7349f6eec086d863d3c3458051707d86c792f8f2fa4551907",
+      "raw_success": false
+    }
+  ],
+  "proof_id": "agency_live_teacher_mutation_transfer_v0",
+  "raw_reports": [
+    {
+      "final_url": "https://www.google.com/",
+      "goal": "Find the Pizza Hut DoorDash page for Dallas, Texas and stop before adding anything or checkout.",
+      "report_hash": "fa14f4dadbc3dfa95e23ef4ea7669eba657e568d61d8dc746a6fc2937e4de12a",
+      "required_final_host": "doordash.com",
+      "required_final_url_terms": [
+        "pizza-hut",
+        "dallas-tx"
+      ],
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        }
+      ],
+      "steps_executed": 3,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": false,
+      "teacher_trace_hash": "",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.google.com/search?q=Taco+Bell+DoorDash+Houston%2C+Texas&sca_esv=700c7e79aa3b521d&sxsrf=APpeQnu9x6bsh0_QJVJi2Vr9b_s8slz0aA%3A1790439169404&source=hp&ei=Ae-3arP5FsHJruEPgJir4AU&iflsig=ABILxe8AAAAAarf9ESXkXqfczw-IC8rXHKD1nuaBkULO&ved=0ahUKEwjz_brV0YyXAxXBpCsGHQDMClwQ4dUDCCI&oq=Taco+Bell+DoorDash+Houston%2C+Texas&gs_lp=Egdnd3Mtd2l6IiFUYWNvIEJlbGwgRG9vckRhc2ggSG91c3RvbiwgVGV4YXMyBRAhGKABMgUQIRigATIFECEYoAEyBRAhGKABMgUQIRigATIFECEYqwJIxXZQAFgAcAB4AJABAJgBaqABaqoBAzAuMbgBDMgBAPgBAZgCAaAChQGYAwCSBwMwLjGgB-kEsgcDMC4xuAeFAcIHAzMtMcgHC4AIAQ&sclient=gws-wiz",
+      "goal": "Find the Taco Bell DoorDash page for Houston, Texas and stop before adding anything or checkout.",
+      "report_hash": "6fca5433150bfd6dc900d2d291626611a24c5c69f2ffd26822fe5f225ebac6ac",
+      "required_final_host": "doordash.com",
+      "required_final_url_terms": [
+        "taco-bell",
+        "houston-tx"
+      ],
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.google.com/search?q=Taco+Bell+DoorDash+Houston%2C+Texas&sca_esv=700c7e79aa3b521d&sxsrf=APpeQnu9x6bsh0_QJVJi2Vr9b_s8slz0aA%3A1790439169404&source=hp&ei=Ae-3arP5FsHJruEPgJir4AU&iflsig=ABILxe8AAAAAarf9ESXkXqfczw-IC8rXHKD1nuaBkULO&ved=0ahUKEwjz_brV0YyXAxXBpCsGHQDMClwQ4dUDCCI&oq=Taco+Bell+DoorDash+Houston%2C+Texas&gs_lp=Egdnd3Mtd2l6IiFUYWNvIEJlbGwgRG9vckRhc2ggSG91c3RvbiwgVGV4YXMyBRAhGKABMgUQIRigATIFECEYoAEyBRAhGKABMgUQIRigATIFECEYqwJIxXZQAFgAcAB4AJABAJgBaqABaqoBAzAuMbgBDMgBAPgBAZgCAaAChQGYAwCSBwMwLjGgB-kEsgcDMC4xuAeFAcIHAzMtMcgHC4AIAQ&sclient=gws-wiz",
+          "bank_packet_present": false,
+          "candidate_id": "c041",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        }
+      ],
+      "steps_executed": 3,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": false,
+      "teacher_trace_hash": "",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.google.com/",
+      "goal": "Find the Walgreens DoorDash page for Phoenix, Arizona and stop before adding anything or checkout.",
+      "report_hash": "cd6af7ff0d3f996fcf9b2183c81dc417c4d74cb42e6167967fbc9188f03e7d68",
+      "required_final_host": "doordash.com",
+      "required_final_url_terms": [
+        "walgreens",
+        "phoenix-az"
+      ],
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        }
+      ],
+      "steps_executed": 3,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": false,
+      "teacher_trace_hash": "",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.google.com/",
+      "goal": "Find the Taco Bell Uber Eats page for Houston, Texas and stop before adding anything or checkout.",
+      "report_hash": "2ea2269d10d0f7a7349f6eec086d863d3c3458051707d86c792f8f2fa4551907",
+      "required_final_host": "ubereats.com",
+      "required_final_url_terms": [
+        "taco-bell",
+        "houston-tx"
+      ],
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        }
+      ],
+      "steps_executed": 3,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": false,
+      "teacher_trace_hash": "",
+      "unsafe_executions": 0
+    }
+  ],
+  "raw_successes": 0,
+  "required_final_host": "",
+  "required_final_hosts_by_pair": [
+    "doordash.com",
+    "doordash.com",
+    "doordash.com",
+    "ubereats.com"
+  ],
+  "required_final_url_terms": [],
+  "required_final_url_terms_by_pair": [
+    [
+      "pizza-hut",
+      "dallas-tx"
+    ],
+    [
+      "taco-bell",
+      "houston-tx"
+    ],
+    [
+      "walgreens",
+      "phoenix-az"
+    ],
+    [
+      "taco-bell",
+      "houston-tx"
+    ]
+  ],
+  "teacher": {
+    "compiled_rules": [
+      {
+        "action": "type",
+        "page_class": "google_home",
+        "target_domain": "",
+        "target_href": "",
+        "target_kind": "type",
+        "target_label": "Search",
+        "teacher_reason": "Progress towards finding Domino's DoorDash page for Chicago.",
+        "text": "Domino's DoorDash Chicago",
+        "trace_index": 0
+      },
+      {
+        "action": "click",
+        "page_class": "google_home",
+        "target_domain": "",
+        "target_href": "",
+        "target_kind": "click",
+        "target_label": "Google Search",
+        "teacher_reason": "Initiate the search for Domino's DoorDash page for Chicago.",
+        "text": "",
+        "trace_index": 1
+      },
+      {
+        "action": "click",
+        "page_class": "google_results",
+        "target_domain": "doordash.com",
+        "target_href": "/goto?url=CAEStgEB6zswFQjFcj4oV-g1rVvKAFWY-M-VG40bTyb1NnTv9U1N1cM_l2eRQWQt_jy8BaptghQFaSBED9XnCqqXW3IVVjVLWtlpjyQ2DxDyyC-NPWrkFSXXr9XNnrQExhZf54wQqV9Sx0swNSNIG0jC6CVzDTciS9CLgnuQpH7X_njP4__xKT1vBBEaSL4NNwcBEKiQQQzyNkPJxHz99uIxZP0tV-3RV86nTFrzjuA3HVnp15tfdHE_AA",
+        "target_kind": "click",
+        "target_label": "Domino's Locations in Chicago, IL DoorDash https://www.doordash.com \u203a city \u203a domino's-13486",
+        "teacher_reason": "Selecting a Domino's location to proceed with the order via DoorDash.",
+        "text": "",
+        "trace_index": 2
+      }
+    ],
+    "compiled_successful_steps": 3,
+    "destination_domains": [
+      "doordash.com"
+    ],
+    "model": "qwen2.5:32b",
+    "report_hash": "7c6861a8776d7c2e642fb2412ab879f5d5ab6c67a64369fcf05c206961968016",
+    "source_report_complete": false,
+    "source_steps_executed": 3,
+    "source_stop_reason": "in_progress"
+  }
+}

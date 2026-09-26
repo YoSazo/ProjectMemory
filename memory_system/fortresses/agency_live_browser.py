@@ -312,6 +312,10 @@ def retrieve_live_teacher_packet(
     exact = [candidate for candidate in same_kind if candidate.label == str(rule.get("target_label") or "")]
     source_goal = str(compiled_trace.get("goal") or "")
     goal_adapted = bool(goal and " ".join(goal.lower().split()) != " ".join(source_goal.lower().split()))
+    goal_tokens = _tokens(goal)
+    target_domain = str(rule.get("target_domain") or "")
+    target_domain_brand = target_domain.split(".", 1)[0]
+    preserve_target_domain = bool(target_domain_brand and target_domain_brand in goal_tokens)
     if exact and not (goal_adapted and rule.get("page_class") == "google_results"):
         selected = exact[0]
         binding_mode = "exact_affordance"
@@ -319,14 +323,18 @@ def retrieve_live_teacher_packet(
         source_goal_tokens = _tokens(source_goal)
         target_tokens = _tokens(f"{rule.get('target_label', '')} {rule.get('target_href', '')}")
         structural_tokens = target_tokens - source_goal_tokens
-        goal_tokens = _tokens(goal)
-        target_domain = str(rule.get("target_domain") or "")
 
         def candidate_score(candidate: LiveCandidate) -> tuple[int, int, int]:
             candidate_text = f"{candidate.label} {candidate.href}"
             candidate_tokens = _tokens(candidate_text)
+            candidate_domain = _domain_hint(candidate_text)
+            destination_score = int(
+                candidate_domain == target_domain
+                if preserve_target_domain
+                else bool(candidate_domain and not candidate_domain.endswith("google.com"))
+            )
             return (
-                int(bool(target_domain) and _domain_hint(candidate_text) == target_domain),
+                destination_score,
                 len(goal_tokens.intersection(candidate_tokens)),
                 len(structural_tokens.intersection(candidate_tokens)),
             )
@@ -340,8 +348,12 @@ def retrieve_live_teacher_packet(
         selected_tokens = _tokens(f"{selected.label} {selected.href}")
         goal_overlap = len(goal_tokens.intersection(selected_tokens))
         structural_overlap = len(structural_tokens.intersection(selected_tokens))
-        domain_matches = bool(target_domain) and _domain_hint(f"{selected.label} {selected.href}") == target_domain
-        if goal_adapted and target_domain and not domain_matches:
+        selected_domain = _domain_hint(f"{selected.label} {selected.href}")
+        domain_matches = bool(target_domain) and selected_domain == target_domain
+        external_destination = bool(selected_domain and not selected_domain.endswith("google.com"))
+        if goal_adapted and preserve_target_domain and not domain_matches:
+            return []
+        if goal_adapted and target_domain and not preserve_target_domain and not external_destination:
             return []
         if (goal_adapted and goal_overlap == 0) or (not goal_adapted and structural_overlap == 0):
             return []
@@ -356,6 +368,13 @@ def retrieve_live_teacher_packet(
             "applicable_page_class": rule.get("page_class"),
             "binding_mode": binding_mode,
             "goal_adapted": goal_adapted,
+            "destination_domain_mode": (
+                "preserved_teacher_domain"
+                if preserve_target_domain
+                else "goal_adapted_external_destination"
+                if goal_adapted and target_domain
+                else "not_applicable"
+            ),
             "required_next_action": {
                 "action": rule.get("action"),
                 "candidate_id": selected.candidate_id,
@@ -770,19 +789,23 @@ def build_live_transfer_proof(
     required_final_url_terms: list[str],
     required_final_url_terms_by_pair: list[list[str]] | None = None,
     required_final_host: str = "",
+    required_final_hosts_by_pair: list[str] | None = None,
 ) -> dict[str, Any]:
     if len(raw_reports) != len(bank_reports):
         raise ValueError("Raw and bank report counts must match.")
     pair_terms = required_final_url_terms_by_pair or [required_final_url_terms for _ in raw_reports]
     if len(pair_terms) != len(raw_reports):
         raise ValueError("Per-pair URL term count must match report pairs.")
+    pair_hosts = required_final_hosts_by_pair or [required_final_host for _ in raw_reports]
+    if len(pair_hosts) != len(raw_reports):
+        raise ValueError("Per-pair final host count must match report pairs.")
 
-    def summarize(report: dict[str, Any], success_terms: list[str]) -> dict[str, Any]:
+    def summarize(report: dict[str, Any], success_terms: list[str], success_host: str) -> dict[str, Any]:
         rows = list(report.get("rows") or [])
         final_url = str(dict(rows[-1].get("after") or {}).get("url") or "") if rows else ""
         final_host = urlparse(final_url).netloc.lower().removeprefix("www.")
-        host_matches = not required_final_host or (
-            final_host == required_final_host or final_host.endswith(f".{required_final_host}")
+        host_matches = not success_host or (
+            final_host == success_host or final_host.endswith(f".{success_host}")
         )
         success = host_matches and all(term.lower() in final_url.lower() for term in success_terms)
         return {
@@ -795,6 +818,7 @@ def build_live_transfer_proof(
             "stop_reason": report.get("stop_reason", ""),
             "final_url": final_url,
             "required_final_url_terms": success_terms,
+            "required_final_host": success_host,
             "success": success,
             "unsafe_executions": sum(
                 1
@@ -821,8 +845,8 @@ def build_live_transfer_proof(
         }
 
     teacher_trace = compile_live_teacher_trace(teacher_report)
-    raw = [summarize(report, terms) for report, terms in zip(raw_reports, pair_terms)]
-    bank = [summarize(report, terms) for report, terms in zip(bank_reports, pair_terms)]
+    raw = [summarize(report, terms, host) for report, terms, host in zip(raw_reports, pair_terms, pair_hosts)]
+    bank = [summarize(report, terms, host) for report, terms, host in zip(bank_reports, pair_terms, pair_hosts)]
     teacher_calls_in_student_runs = sum(
         int(report.get("teacher_calls") or 0) for report in [*raw_reports, *bank_reports]
     )
@@ -841,6 +865,18 @@ def build_live_transfer_proof(
         len(set(task_goals)) == len(task_goals)
         and all(goal != str(teacher_report.get("goal") or "") for goal in task_goals)
     )
+    teacher_destination_domains = sorted(
+        {
+            str(rule.get("target_domain") or "")
+            for rule in teacher_trace.get("rules", [])
+            if rule.get("target_domain")
+        }
+    )
+    bank_destination_hosts = [urlparse(str(row.get("final_url") or "")).netloc.lower().removeprefix("www.") for row in bank]
+    includes_cross_platform_mutation = bool(teacher_destination_domains) and any(
+        row["success"] and host and host not in teacher_destination_domains
+        for row, host in zip(bank, bank_destination_hosts)
+    )
     return {
         "proof_id": (
             "agency_live_teacher_mutation_transfer_v0"
@@ -851,6 +887,7 @@ def build_live_transfer_proof(
         "required_final_url_terms": required_final_url_terms,
         "required_final_url_terms_by_pair": pair_terms,
         "required_final_host": required_final_host,
+        "required_final_hosts_by_pair": pair_hosts,
         "teacher": {
             "model": teacher_trace.get("source_model", ""),
             "report_hash": teacher_trace.get("source_report_hash", ""),
@@ -858,6 +895,7 @@ def build_live_transfer_proof(
             "source_steps_executed": teacher_report.get("steps_executed", 0),
             "compiled_successful_steps": len(teacher_trace.get("rules", [])),
             "source_report_complete": teacher_report.get("stop_reason") not in {"", "in_progress"},
+            "destination_domains": teacher_destination_domains,
             "compiled_rules": teacher_trace.get("rules", []),
         },
         "raw_successes": sum(1 for row in raw if row["success"]),
@@ -873,6 +911,7 @@ def build_live_transfer_proof(
             "all_executed_actions_safe": all(row["unsafe_executions"] == 0 for row in [*raw, *bank]),
             "seed_replications_are_independent_cases": False,
             "trials_are_independent_task_cases": independent_task_cases,
+            "includes_cross_platform_mutation": includes_cross_platform_mutation,
         },
     }
 
@@ -884,11 +923,15 @@ def write_live_transfer_proof(report: dict[str, Any], out_dir: str | Path) -> di
     markdown_path = root / "agency_live_teacher_transfer.md"
     json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     independent_tasks = bool(dict(report.get("authenticity") or {}).get("trials_are_independent_task_cases"))
+    cross_platform = bool(dict(report.get("authenticity") or {}).get("includes_cross_platform_mutation"))
     trial_label = "Independent mutated task cases" if independent_tasks else "Paired seed replications"
     interpretation = (
         "The same frozen teacher trace was goal-adapted and affordance-bound for each distinct live task. "
-        "These are independent merchant/city mutations, including a restaurant-to-retail mutation; "
+        "These are independent goal mutations and include a transfer to a different platform domain; "
         "they establish bounded procedural transfer, not general browser agency."
+        if independent_tasks and cross_platform
+        else "The same frozen teacher trace was goal-adapted and affordance-bound for each distinct live task. "
+        "These are independent goal mutations; they establish bounded procedural transfer, not general browser agency."
         if independent_tasks
         else "The same frozen teacher trace was compiled into affordance-bound procedural capsules for each live run. "
         "These are seed replications of one task, not independent task cases; this is a live transfer signal, not a generality claim."
@@ -904,6 +947,7 @@ def write_live_transfer_proof(report: dict[str, Any], out_dir: str | Path) -> di
         f"- Bank-assisted successes: `{report.get('bank_successes', 0)}/{report.get('paired_trials', 0)}`",
         f"- Teacher calls in student runs: `{dict(report.get('authenticity') or {}).get('teacher_calls_in_student_runs', 0)}`",
         f"- All executed actions safe: `{dict(report.get('authenticity') or {}).get('all_executed_actions_safe', False)}`",
+        f"- Includes cross-platform mutation: `{cross_platform}`",
         "",
         "## Interpretation",
         "",
