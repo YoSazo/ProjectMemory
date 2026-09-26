@@ -13,7 +13,10 @@ from ..ollama_client import ChatMessage, UniversalLLMClient
 
 
 LIVE_BROWSER_FORTRESS_ID = "agency_live_browser_v0"
-INTERACTIVE_SELECTOR = 'a,button,input,textarea,select,[role="button"],[role="link"],[contenteditable="true"]'
+INTERACTIVE_SELECTOR = (
+    'a,button,input,textarea,select,label,[role="button"],[role="link"],[role="radio"],[role="option"],'
+    '[contenteditable="true"]'
+)
 IRREVERSIBLE_TERMS = (
     "place order",
     "submit order",
@@ -25,6 +28,7 @@ IRREVERSIBLE_TERMS = (
 )
 AUTH_TERMS = ("sign in", "sign up", "log in", "create account")
 CAUTION_TERMS = ("checkout", "add to cart", "continue to payment", "review order")
+ADD_TO_CART_PATTERN = re.compile(r"\badd(?:\s+[a-z0-9$.,-]+){0,3}\s+to\s+(?:the\s+)?cart\b", re.IGNORECASE)
 
 
 def _stable_hash(value: Any) -> str:
@@ -42,7 +46,7 @@ def classify_candidate_safety(label: str, href: str = "") -> tuple[str, str]:
         return "blocked", "irreversible_transaction_boundary"
     if any(term in text for term in AUTH_TERMS):
         return "blocked", "authentication_boundary"
-    if any(term in text for term in CAUTION_TERMS):
+    if any(term in text for term in CAUTION_TERMS) or ADD_TO_CART_PATTERN.search(text):
         return "caution", "transaction_progression"
     return "safe", "reversible_visible_action"
 
@@ -117,7 +121,7 @@ def parse_live_decision(raw: str) -> tuple[dict[str, str] | None, str]:
     if not isinstance(payload, dict):
         return None, "not_object"
     action = str(payload.get("action") or "").strip().lower()
-    if action not in {"click", "type", "stop", "ask"}:
+    if action not in {"click", "type", "scroll", "stop", "ask"}:
         return None, "invalid_action"
     candidate_id = str(payload.get("candidate_id") or "")
     if action in {"click", "type"} and not candidate_id:
@@ -150,6 +154,10 @@ def verify_live_decision(
         if expected_text and str(decision.get("text") or "") != expected_text:
             return False, f"verified procedural memory requires text={expected_text!r}"
     if action in {"stop", "ask"}:
+        return True, ""
+    if action == "scroll":
+        if str(decision.get("text") or "").lower() not in {"down", "up"}:
+            return False, "scroll action requires text=down or text=up"
         return True, ""
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
     candidate = by_id.get(decision["candidate_id"])
@@ -205,21 +213,25 @@ def build_live_messages(
     visible_text: str,
     candidates: list[LiveCandidate],
     history: list[dict[str, Any]],
+    scrollable_regions: list[dict[str, Any]],
     bank_packet: list[dict[str, Any]] | None = None,
 ) -> list[ChatMessage]:
     system = (
         "OUTPUT ONE JSON OBJECT AND NOTHING ELSE. You control a real browser through a bounded observe-act-reobserve "
-        "loop. Select exactly one listed candidate "
+        "loop. Select exactly one listed candidate, or scroll the current view up/down, "
         "or stop/ask. Never invent candidate IDs. Prefer reversible progress. Never select blocked controls, sign-in, "
         "account creation, payment, purchase, or order submission. Stop before checkout or any transaction boundary. "
+        "If needed goal options are not listed and a scrollable region has remaining content, scroll instead of repeating "
+        "a click that did not change state. "
         "For a type action, text must be directly supported by the user's goal. Treat a bank_packet "
         "required_next_action as verified procedural memory and follow it exactly. Return only JSON shaped as "
-        '{"action":"click|type|stop|ask","candidate_id":"c000 or empty","text":"","reason":""}.'
+        '{"action":"click|type|scroll|stop|ask","candidate_id":"c000 or empty","text":"down|up only for scroll","reason":""}.'
     )
     state = {
         "goal": goal,
         "page": {"url": url, "title": title, "visible_text": visible_text[:5000]},
         "candidates": [candidate.public() for candidate in candidates],
+        "scrollable_regions": scrollable_regions,
         "recent_history": [
             {
                 "step_index": row.get("step_index"),
@@ -257,9 +269,39 @@ def _domain_hint(text: str) -> str:
 def compile_live_teacher_trace(report: dict[str, Any]) -> dict[str, Any]:
     rules: list[dict[str, Any]] = []
     for row in list(report.get("rows") or []):
+        decision = dict(row.get("decision") or {})
+        if decision.get("action") in {"stop", "ask"}:
+            rules.append(
+                {
+                    "trace_index": len(rules),
+                    "page_class": _page_class(str(dict(row.get("before") or {}).get("url") or "")),
+                    "action": str(decision.get("action") or ""),
+                    "target_kind": "",
+                    "target_label": "",
+                    "target_href": "",
+                    "target_domain": "",
+                    "text": "",
+                    "teacher_reason": str(decision.get("reason") or ""),
+                }
+            )
+            continue
         if not dict(row.get("execution") or {}).get("executed"):
             continue
-        decision = dict(row.get("decision") or {})
+        if decision.get("action") == "scroll":
+            rules.append(
+                {
+                    "trace_index": len(rules),
+                    "page_class": _page_class(str(dict(row.get("before") or {}).get("url") or "")),
+                    "action": "scroll",
+                    "target_kind": "",
+                    "target_label": "",
+                    "target_href": "",
+                    "target_domain": "",
+                    "text": str(decision.get("text") or ""),
+                    "teacher_reason": str(decision.get("reason") or ""),
+                }
+            )
+            continue
         candidate_id = str(decision.get("candidate_id") or "")
         candidate = next(
             (
@@ -307,6 +349,27 @@ def retrieve_live_teacher_packet(
     rule = dict(rules[completed])
     if str(rule.get("page_class") or "") != _page_class(str(observation.get("url") or "")):
         return []
+    if rule.get("action") in {"scroll", "stop", "ask"}:
+        goal_adapted = bool(goal and goal != str(compiled_trace.get("goal") or ""))
+        terminal = str(rule.get("action") or "") in {"stop", "ask"}
+        return [
+            {
+                "source_report_hash": compiled_trace.get("source_report_hash", ""),
+                "trace_index": rule.get("trace_index"),
+                "applicable_page_class": rule.get("page_class"),
+                "binding_mode": "terminal_boundary" if terminal else "reversible_viewport_action",
+                "goal_adapted": goal_adapted,
+                "destination_domain_mode": "not_applicable",
+                "required_next_action": {
+                    "action": rule.get("action"),
+                    "candidate_id": "",
+                    "candidate_label": "",
+                    "text": "" if terminal else rule.get("text", "down"),
+                },
+                "text_policy": "",
+                "teacher_reason": "" if goal_adapted else rule.get("teacher_reason", ""),
+            }
+        ]
     candidates = list(observation.get("candidates") or [])
     same_kind = [candidate for candidate in candidates if candidate.kind == str(rule.get("target_kind") or "")]
     exact = [candidate for candidate in same_kind if candidate.label == str(rule.get("target_label") or "")]
@@ -461,14 +524,41 @@ class PlaywrightCDPBridge:
                 continue
         ranked = rank_candidates(candidates, goal, limit=limit)
         body_text = " ".join(self.page.locator("body").inner_text(timeout=5000).split())
+        scrollable_regions = self.page.evaluate(
+            """
+            () => Array.from(document.querySelectorAll('*'))
+              .filter((element) => {
+                const rect = element.getBoundingClientRect();
+                const style = getComputedStyle(element);
+                return rect.width > 100 && rect.height > 100
+                  && rect.bottom > 0 && rect.top < innerHeight
+                  && element.scrollHeight > element.clientHeight + 80
+                  && ['auto', 'scroll'].includes(style.overflowY);
+              })
+              .slice(0, 8)
+              .map((element) => ({
+                tag: element.tagName.toLowerCase(),
+                label: (element.getAttribute('aria-label') || element.getAttribute('role') || '').slice(0, 120),
+                scroll_top: Math.round(element.scrollTop),
+                max_scroll_top: Math.round(element.scrollHeight - element.clientHeight),
+              }))
+            """
+        )
         return {
             "url": self.page.url,
             "title": self.page.title(),
             "visible_text": body_text,
             "candidates": ranked,
             "all_candidate_count": len(candidates),
+            "scrollable_regions": scrollable_regions,
             "state_hash": _stable_hash(
-                {"url": self.page.url, "title": self.page.title(), "text": body_text[:5000], "candidates": [asdict(c) for c in ranked]}
+                {
+                    "url": self.page.url,
+                    "title": self.page.title(),
+                    "text": body_text[:5000],
+                    "candidates": [asdict(c) for c in ranked],
+                    "scrollable_regions": scrollable_regions,
+                }
             ),
         }
 
@@ -477,6 +567,52 @@ class PlaywrightCDPBridge:
         action = decision["action"]
         if action in {"stop", "ask"}:
             return {"status": action, "executed": False, "reason": decision.get("reason", "")}
+        if action == "scroll":
+            direction = str(decision.get("text") or "").lower()
+            if direction not in {"down", "up"}:
+                return {"status": "blocked", "executed": False, "reason": "invalid_scroll_direction"}
+            try:
+                result = self.page.evaluate(
+                    """
+                    (direction) => {
+                      const regions = Array.from(document.querySelectorAll('*'))
+                        .filter((element) => {
+                          const rect = element.getBoundingClientRect();
+                          const style = getComputedStyle(element);
+                          return rect.width > 100 && rect.height > 100
+                            && rect.bottom > 0 && rect.top < innerHeight
+                            && element.scrollHeight > element.clientHeight + 80
+                            && ['auto', 'scroll'].includes(style.overflowY);
+                        })
+                        .sort((a, b) => {
+                          const ar = a.getBoundingClientRect();
+                          const br = b.getBoundingClientRect();
+                          return (br.width * br.height) - (ar.width * ar.height);
+                        });
+                      const amount = direction === 'down' ? 320 : -320;
+                      if (regions.length) {
+                        const target = regions[0];
+                        const before = target.scrollTop;
+                        target.scrollBy(0, amount);
+                        return {scope: 'element', before, after: target.scrollTop};
+                      }
+                      const before = window.scrollY;
+                      window.scrollBy(0, amount);
+                      return {scope: 'window', before, after: window.scrollY};
+                    }
+                    """,
+                    direction,
+                )
+                self.page.wait_for_timeout(500)
+                moved = int(result.get("after", 0)) != int(result.get("before", 0))
+                return {
+                    "status": "executed" if moved else "blocked",
+                    "executed": moved,
+                    "reason": "reversible_scroll_completed" if moved else "scroll_position_unchanged",
+                    "scroll": result,
+                }
+            except Exception as exc:
+                return {"status": "error", "executed": False, "reason": str(exc)[:500]}
         candidates = {candidate.candidate_id: candidate for candidate in observation["candidates"]}
         candidate = candidates.get(decision["candidate_id"])
         if candidate is None:
@@ -594,6 +730,7 @@ def run_live_browser_fortress(
                 visible_text=observation["visible_text"],
                 candidates=observation["candidates"],
                 history=rows,
+                scrollable_regions=observation["scrollable_regions"],
                 bank_packet=bank_packet,
             )
             started = time.time()
@@ -615,6 +752,7 @@ def run_live_browser_fortress(
                             "title": observation["title"],
                             "state_hash": observation["state_hash"],
                             "all_candidate_count": observation["all_candidate_count"],
+                            "scrollable_regions": observation["scrollable_regions"],
                             "candidates": [candidate.public() for candidate in observation["candidates"]],
                             "screenshot": str(screenshot_path),
                         },
@@ -641,6 +779,12 @@ def run_live_browser_fortress(
             candidate_id_canonicalized = False
             while decision is None and repair_count < 2:
                 repair_count += 1
+                bank_repair = (
+                    " Verified procedural memory requires exactly: "
+                    f"{json.dumps(dict(bank_packet[0].get('required_next_action') or {}), sort_keys=True)}."
+                    if bank_packet
+                    else ""
+                )
                 repair_messages = [
                     *messages,
                     ChatMessage(role="assistant", content=response_text),
@@ -648,9 +792,10 @@ def run_live_browser_fortress(
                         role="user",
                         content=(
                             "FORMAT VERIFIER FAILURE. Your previous response was not the required JSON action object. "
-                            "Select one candidate from the supplied state and return only "
-                            '{"action":"click|type|stop|ask","candidate_id":"c000 or empty",'
-                            '"text":"","reason":""}. No prose or Markdown.'
+                            f"{bank_repair} "
+                            "Select one candidate from the supplied state, or use a reversible scroll, and return only "
+                            '{"action":"click|type|scroll|stop|ask","candidate_id":"c000 or empty",'
+                            '"text":"down|up only for scroll","reason":""}. No prose or Markdown.'
                         ),
                     ),
                 ]
@@ -684,6 +829,17 @@ def run_live_browser_fortress(
             while decision is not None and not decision_ok and action_repair_count < 2:
                 action_repair_count += 1
                 valid_ids = [candidate.candidate_id for candidate in observation["candidates"]]
+                repair_instruction = (
+                    "Reproduce this verified required action exactly: "
+                    f"{json.dumps(dict(bank_packet[0].get('required_next_action') or {}), sort_keys=True)}."
+                    if bank_packet
+                    else (
+                        f"Exact candidate IDs: {json.dumps(valid_ids)}. "
+                        f"Scrollable regions: {json.dumps(observation['scrollable_regions'])}. "
+                        "If the desired control is not listed and content remains below, return a scroll action "
+                        "with empty candidate_id and text=down. Do not repeat a product click that already opened details."
+                    )
+                )
                 repair_messages = [
                     *messages,
                     ChatMessage(role="assistant", content=response_text),
@@ -691,7 +847,7 @@ def run_live_browser_fortress(
                         role="user",
                         content=(
                             "ACTION VERIFIER FAILURE. Repair the action without changing the observed state. "
-                            f"Failure: {decision_feedback}. Exact candidate IDs: {json.dumps(valid_ids)}. "
+                            f"Failure: {decision_feedback}. {repair_instruction} "
                             "Return only the required JSON object."
                         ),
                     ),
@@ -754,6 +910,7 @@ def run_live_browser_fortress(
                     "title": observation["title"],
                     "state_hash": observation["state_hash"],
                     "all_candidate_count": observation["all_candidate_count"],
+                    "scrollable_regions": observation["scrollable_regions"],
                     "candidates": [candidate.public() for candidate in observation["candidates"]],
                     "screenshot": str(screenshot_path),
                 },
@@ -954,6 +1111,124 @@ def write_live_transfer_proof(report: dict[str, Any], out_dir: str | Path) -> di
         interpretation,
         "The preserved teacher source report contains three successful actions and has stop reason `in_progress`; "
         "only those completed actions were compiled.",
+    ]
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"report_json": str(json_path), "report_markdown": str(markdown_path)}
+
+
+def build_live_trace_completion_proof(
+    *,
+    teacher_report: dict[str, Any],
+    raw_report: dict[str, Any],
+    bank_report: dict[str, Any],
+) -> dict[str, Any]:
+    trace = compile_live_teacher_trace(teacher_report)
+    rules = list(trace.get("rules") or [])
+
+    def summarize(report: dict[str, Any]) -> dict[str, Any]:
+        rows = list(report.get("rows") or [])
+        sequence: list[dict[str, Any]] = []
+        matches: list[bool] = []
+        transaction_progression_executions = 0
+        for index, rule in enumerate(rules):
+            row = dict(rows[index]) if index < len(rows) else {}
+            decision = dict(row.get("decision") or {})
+            candidates = list(dict(row.get("before") or {}).get("candidates") or [])
+            selected = next(
+                (dict(item) for item in candidates if item.get("candidate_id") == decision.get("candidate_id")),
+                {},
+            )
+            execution = dict(row.get("execution") or {})
+            terminal = str(rule.get("action") or "") in {"stop", "ask"}
+            matched = (
+                decision.get("action") == rule.get("action")
+                and (not rule.get("target_label") or selected.get("label") == rule.get("target_label"))
+                and (not rule.get("text") or decision.get("text") == rule.get("text"))
+                and (not terminal or execution.get("status") == rule.get("action"))
+                and (terminal or execution.get("executed") is True)
+            )
+            matches.append(bool(matched))
+            sequence.append(
+                {
+                    "trace_index": index,
+                    "expected_action": rule.get("action", ""),
+                    "expected_label": rule.get("target_label", ""),
+                    "actual_action": decision.get("action", ""),
+                    "actual_label": selected.get("label", ""),
+                    "matched": bool(matched),
+                }
+            )
+        for row in rows:
+            if not dict(row.get("execution") or {}).get("executed"):
+                continue
+            decision = dict(row.get("decision") or {})
+            selected = next(
+                (
+                    dict(item)
+                    for item in list(dict(row.get("before") or {}).get("candidates") or [])
+                    if item.get("candidate_id") == decision.get("candidate_id")
+                ),
+                {},
+            )
+            if selected.get("safety") in {"caution", "blocked"}:
+                transaction_progression_executions += 1
+        return {
+            "report_hash": _stable_hash(report),
+            "student_model": report.get("student_model", ""),
+            "teacher_trace_hash": report.get("teacher_trace_hash", ""),
+            "stop_reason": report.get("stop_reason", ""),
+            "trace_complete": bool(rules) and all(matches),
+            "terminal_rule_followed": bool(rules) and rules[-1].get("action") in {"stop", "ask"} and bool(matches[-1]),
+            "transaction_progression_executions": transaction_progression_executions,
+            "sequence": sequence,
+        }
+
+    raw = summarize(raw_report)
+    bank = summarize(bank_report)
+    return {
+        "proof_id": "agency_live_teacher_item_sequence_v0",
+        "generated_ts": int(time.time()),
+        "teacher": {
+            "model": trace.get("source_model", ""),
+            "report_hash": trace.get("source_report_hash", ""),
+            "compiled_rules": rules,
+        },
+        "raw": raw,
+        "bank": bank,
+        "authenticity": {
+            "teacher_calls_in_student_runs": int(raw_report.get("teacher_calls") or 0)
+            + int(bank_report.get("teacher_calls") or 0),
+            "raw_has_no_teacher_trace": not bool(raw.get("teacher_trace_hash")),
+            "bank_uses_teacher_trace": bank.get("teacher_trace_hash") == trace.get("source_report_hash"),
+            "no_transaction_progression_executed": (
+                raw["transaction_progression_executions"] == 0
+                and bank["transaction_progression_executions"] == 0
+            ),
+        },
+    }
+
+
+def write_live_trace_completion_proof(report: dict[str, Any], out_dir: str | Path) -> dict[str, str]:
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    json_path = root / "agency_live_trace_completion.json"
+    markdown_path = root / "agency_live_trace_completion.md"
+    json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    raw = dict(report.get("raw") or {})
+    bank = dict(report.get("bank") or {})
+    authenticity = dict(report.get("authenticity") or {})
+    lines = [
+        "# Agency Live Item-Sequence Proof",
+        "",
+        f"- Teacher: `{dict(report.get('teacher') or {}).get('model', '')}`",
+        f"- Raw trace complete: `{raw.get('trace_complete', False)}`",
+        f"- Bank trace complete: `{bank.get('trace_complete', False)}`",
+        f"- Bank terminal stop followed: `{bank.get('terminal_rule_followed', False)}`",
+        f"- Teacher calls in student runs: `{authenticity.get('teacher_calls_in_student_runs', 0)}`",
+        f"- Transaction progression actions executed: `{raw.get('transaction_progression_executions', 0) + bank.get('transaction_progression_executions', 0)}`",
+        "",
+        "The frozen teacher sequence opens the store, opens the target item, selects the large size, and stops before cart. "
+        "This is one live item task and is not yet a cross-item transfer claim.",
     ]
     markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"report_json": str(json_path), "report_markdown": str(markdown_path)}

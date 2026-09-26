@@ -32,6 +32,8 @@ def test_live_safety_blocks_irreversible_and_authentication_boundaries():
     assert classify_candidate_safety("Place Order")[0] == "blocked"
     assert classify_candidate_safety("Sign In")[0] == "blocked"
     assert classify_candidate_safety("Proceed to checkout")[0] == "caution"
+    assert classify_candidate_safety("Add item to cart")[0] == "caution"
+    assert classify_candidate_safety("Add Cheese Pizza to the cart")[0] == "caution"
     assert classify_candidate_safety("Chicago")[0] == "safe"
 
 
@@ -68,6 +70,11 @@ def test_live_decision_parser_is_strict_about_actions_and_candidate_ids():
     )
     assert mode == "json"
     assert decision and decision["candidate_id"] == "c002"
+    scroll, mode = parse_live_decision(
+        '{"action":"scroll","candidate_id":"","text":"down","reason":"options below"}'
+    )
+    assert mode == "json"
+    assert scroll and verify_live_decision(scroll, [], "find large size")[0]
     assert parse_live_decision('{"action":"click","candidate_id":""}')[0] is None
     assert parse_live_decision('{"action":"purchase","candidate_id":"c002"}')[0] is None
 
@@ -114,6 +121,31 @@ def test_live_teacher_trace_compiles_and_rebinds_affordance_not_dom_id():
     assert packet[0]["required_next_action"]["candidate_id"] == "c004"
     wrong = {"action": "click", "candidate_id": "c004", "text": "", "reason": ""}
     assert not verify_live_decision(wrong, [rebound], "Find Domino's", bank_packet=packet)[0]
+
+
+def test_live_teacher_trace_preserves_terminal_stop_rule():
+    report = {
+        "fortress_id": "live",
+        "student_model": "teacher",
+        "goal": "select large and stop",
+        "rows": [
+            {
+                "before": {"url": "https://www.doordash.com/store/example", "candidates": []},
+                "decision": {"action": "stop", "candidate_id": "", "text": "", "reason": "goal complete"},
+                "execution": {"executed": False, "status": "stop"},
+            }
+        ],
+    }
+    compiled = compile_live_teacher_trace(report)
+    packet = retrieve_live_teacher_packet(
+        compiled_trace=compiled,
+        observation={"url": "https://www.doordash.com/store/example", "candidates": []},
+        history=[],
+        goal=report["goal"],
+    )
+    assert compiled["rules"][0]["action"] == "stop"
+    assert packet[0]["binding_mode"] == "terminal_boundary"
+    assert packet[0]["required_next_action"]["action"] == "stop"
 
 
 def test_live_teacher_trace_adapts_search_text_and_result_to_new_goal():
