@@ -116,6 +116,71 @@ def test_live_teacher_trace_compiles_and_rebinds_affordance_not_dom_id():
     assert not verify_live_decision(wrong, [rebound], "Find Domino's", bank_packet=packet)[0]
 
 
+def test_live_teacher_trace_adapts_search_text_and_result_to_new_goal():
+    report = {
+        "fortress_id": "live",
+        "student_model": "teacher",
+        "goal": "Find Domino's DoorDash page for Chicago",
+        "rows": [
+            {
+                "before": {"url": "https://www.google.com/", "candidates": [_candidate(17, "Search", tag="input").public()]},
+                "decision": {"action": "type", "candidate_id": "c017", "text": "Domino's DoorDash Chicago", "reason": "search"},
+                "execution": {"executed": True},
+            }
+        ],
+    }
+    compiled = compile_live_teacher_trace(report)
+    packet = retrieve_live_teacher_packet(
+        compiled_trace=compiled,
+        observation={"url": "https://www.google.com/", "candidates": [_candidate(4, "Search", tag="input")]},
+        history=[],
+        goal="Find Pizza Hut DoorDash page for Dallas",
+    )
+    assert packet[0]["goal_adapted"] is True
+    assert packet[0]["required_next_action"]["text"] == ""
+    assert "current goal" in packet[0]["text_policy"]
+    assert packet[0]["teacher_reason"] == ""
+
+
+def test_goal_adapted_result_preserves_teacher_destination_domain():
+    report = {
+        "fortress_id": "live",
+        "student_model": "teacher",
+        "goal": "Find Domino's DoorDash page for Chicago",
+        "rows": [
+            {
+                "before": {
+                    "url": "https://www.google.com/search?q=dominos",
+                    "candidates": [
+                        _candidate(
+                            8,
+                            "Domino's Locations in Chicago DoorDash https://www.doordash.com/city/chicago",
+                            href="https://www.doordash.com/city/chicago",
+                        ).public()
+                    ],
+                },
+                "decision": {"action": "click", "candidate_id": "c008", "text": "", "reason": "result"},
+                "execution": {"executed": True},
+            }
+        ],
+    }
+    compiled = compile_live_teacher_trace(report)
+    maps = _candidate(1, "Maps Pizza Hut DoorDash Dallas Texas", href="https://www.google.com/maps?q=pizza+hut")
+    doordash = _candidate(
+        2,
+        "Pizza Hut locations Dallas DoorDash https://www.doordash.com/city/dallas",
+        href="https://www.doordash.com/city/dallas",
+    )
+    packet = retrieve_live_teacher_packet(
+        compiled_trace=compiled,
+        observation={"url": "https://www.google.com/search?q=pizza", "candidates": [maps, doordash]},
+        history=[],
+        goal="Find Pizza Hut DoorDash page for Dallas Texas",
+    )
+    assert compiled["rules"][0]["target_domain"] == "doordash.com"
+    assert packet[0]["required_next_action"]["candidate_id"] == "c002"
+
+
 def test_bank_candidate_id_canonicalizer_only_restores_equivalent_zero_padding():
     packet = [{"required_next_action": {"candidate_id": "c039"}}]
     normalized, changed = canonicalize_bank_candidate_id(
@@ -168,4 +233,45 @@ def test_live_transfer_proof_keeps_seed_replication_caveat():
     assert proof["bank_successes"] == 1
     assert proof["authenticity"]["teacher_calls_in_student_runs"] == 0
     assert proof["authenticity"]["seed_replications_are_independent_cases"] is False
+    assert proof["authenticity"]["trials_are_independent_task_cases"] is False
     assert proof["teacher"]["source_report_complete"] is False
+
+
+def test_live_transfer_proof_requires_destination_host_for_mutated_tasks():
+    def report(goal: str, url: str, trace: str) -> dict:
+        return {
+            "fortress_id": "live",
+            "student_model": "mistral",
+            "goal": goal,
+            "start_url": "https://google.com",
+            "stop_reason": "max_steps",
+            "teacher_calls": 0,
+            "teacher_trace_hash": trace,
+            "steps_executed": 1,
+            "rows": [
+                {
+                    "step_index": 0,
+                    "decision": {"action": "click", "candidate_id": "c001"},
+                    "before": {"candidates": [{"candidate_id": "c001", "safety": "safe"}]},
+                    "execution": {"executed": True, "status": "executed"},
+                    "after": {"url": url},
+                    "bank_packet": [{}] if trace else [],
+                }
+            ],
+        }
+
+    teacher = {**report("teacher source", "https://doordash.com/source", ""), "student_model": "teacher"}
+    goal = "Find Pizza Hut in Dallas"
+    raw = report(goal, "https://google.com/search?q=doordash+pizza+hut+dallas", "")
+    bank = report(goal, "https://doordash.com/city/dallas/pizza-hut", "trace")
+    proof = build_live_transfer_proof(
+        teacher_report=teacher,
+        raw_reports=[raw],
+        bank_reports=[bank],
+        required_final_url_terms=[],
+        required_final_url_terms_by_pair=[["pizza-hut", "dallas"]],
+        required_final_host="doordash.com",
+    )
+    assert proof["raw_successes"] == 0
+    assert proof["bank_successes"] == 1
+    assert proof["authenticity"]["trials_are_independent_task_cases"] is True
