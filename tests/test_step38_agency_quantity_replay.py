@@ -22,6 +22,7 @@ from memory_system.fortresses.agency_quantity_replay import (
     _student_bank_packet,
     build_quantity_student_messages,
     default_quantity_replay_cases,
+    execute_quantity_decision,
     extract_live_quantity_teacher_rule,
     quantity_transmutation_to_ledger_entry,
     retrieve_quantity_rules,
@@ -33,6 +34,7 @@ from memory_system.fortresses.agency_quantity_replay import (
     write_quantity_manifests,
     write_sanitized_quantity_proof,
 )
+from memory_system.fortresses.agency_quantity_replay import QuantityStudentDecision
 from memory_system.fortresses.meta_fortress import GlobalTransmutationLedger
 from memory_system.ollama_client import ChatResponse
 
@@ -86,6 +88,16 @@ class FakeStudentClient:
             ),
             request_metadata={"provider": "ollama", "fake": True},
         )
+
+
+def test_alias_target_is_scored_by_hidden_case_identity_not_literal_prompt_tokens():
+    case = next(item for item in default_quantity_replay_cases() if item.case_id == "holdout_alias_pie_irrelevant_numeric")
+    result = execute_quantity_decision(
+        case=case,
+        decision=QuantityStudentDecision(action_type="tap", target_id="pizza-plus"),
+    )
+    assert result.success is True
+    assert result.wrong_target is False
 
 
 class FakeTeacherClient:

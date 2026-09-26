@@ -1164,10 +1164,12 @@ def execute_quantity_decision(*, case: QuantityReplayCase, decision: QuantityStu
         )
     metadata = dict(target.get("metadata") or {})
     action = str(metadata.get("quantity_action") or "")
-    item_context = str(metadata.get("item_context") or "").lower()
-    requested_item_tokens = [token for token in str(snapshot.capsule_slots.get("item") or "").lower().split() if token]
+    item_context = " ".join(str(metadata.get("item_context") or "").lower().split())
+    expected_item_context = " ".join(str(case.item_label or "").lower().split())
     if action in {"increment", "decrement"}:
-        wrong_target = bool(requested_item_tokens and not all(token in item_context for token in requested_item_tokens))
+        # The case fixture is the hidden environment oracle. Lexical overlap with the
+        # user's wording cannot score aliases such as pizza -> pie correctly.
+        wrong_target = item_context != expected_item_context
         next_quantity = current + (1 if action == "increment" else -1)
         success = (not wrong_target) and next_quantity == requested
         return QuantityExecutionResult(

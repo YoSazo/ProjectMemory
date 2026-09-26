@@ -148,6 +148,16 @@ from .fortresses.agency_quantity_replay import (
     write_quantity_manifests,
     write_quantity_replay_report,
 )
+from .fortresses.agency_transfer_fortress import (
+    FAMILY_ALIAS as AGENCY_TRANSFER_FAMILY_ALIAS,
+    FAMILY_BOUNDARY as AGENCY_TRANSFER_FAMILY_BOUNDARY,
+    TRANSFER_LANES as AGENCY_TRANSFER_LANES,
+    default_transfer_cases as default_agency_transfer_cases,
+    extract_teacher_rules as extract_agency_transfer_teacher_rules,
+    run_transfer_proof as run_agency_transfer_proof,
+    write_sanitized_transfer_proof as write_sanitized_agency_transfer_proof,
+    write_transfer_artifacts as write_agency_transfer_artifacts,
+)
 from .fortresses.meta_fortress import GlobalTransmutationLedger
 from .ollama_client import ChatMessage, UniversalLLMClient
 from .terminal_workbench import serve_terminal_workbench
@@ -1130,6 +1140,55 @@ def _handle_agency_quantity_replay(args: argparse.Namespace) -> int:
             f"improvement {report.get('improvement_count', 0)} | "
             f"teacher calls in student lanes {report.get('teacher_calls_in_student_lanes', 0)}"
         )
+    return 0
+
+
+def _handle_agency_transfer_proof(args: argparse.Namespace) -> int:
+    teacher_client = UniversalLLMClient(provider="ollama", base_url=args.teacher_base_url)
+    student_client = UniversalLLMClient(provider="ollama", base_url=args.student_base_url)
+    reused_teacher_artifact = bool(args.teacher_artifact)
+    if reused_teacher_artifact:
+        teacher = json.loads(Path(args.teacher_artifact).expanduser().read_text(encoding="utf-8"))
+    else:
+        teacher = extract_agency_transfer_teacher_rules(
+            client=teacher_client,
+            model=args.teacher_model,
+            seed=args.teacher_seed,
+            num_ctx=args.teacher_num_ctx,
+        )
+    report = run_agency_transfer_proof(
+        teacher=teacher,
+        student_client=student_client,
+        student_model=args.student_model,
+        cases=[
+            case
+            for case in default_agency_transfer_cases()
+            if not args.family or case.split == "train" or case.family == args.family
+        ],
+        trials=args.trials,
+        seed_base=args.seed_base,
+        num_ctx=args.student_num_ctx,
+        lanes=tuple(args.lane or AGENCY_TRANSFER_LANES),
+        teacher_calls_this_run=0 if reused_teacher_artifact else int(teacher.get("teacher_calls") or 0),
+    )
+    artifacts = write_agency_transfer_artifacts(report=report, teacher=teacher, out_dir=args.out_dir)
+    if args.proof_dir:
+        artifacts.update(write_sanitized_agency_transfer_proof(report=report, out_dir=args.proof_dir))
+    summary = {
+        "teacher_model": report.get("teacher_model", ""),
+        "student_model": report.get("student_model", ""),
+        "holdout_count": report.get("holdout_count", 0),
+        "trials_per_holdout": report.get("trials_per_holdout", 0),
+        "success_counts": report.get("success_counts", {}),
+        "family_counts": report.get("family_counts", []),
+        "paired_discordance": report.get("paired_discordance", []),
+        "authenticity": report.get("authenticity", {}),
+        "artifacts": artifacts,
+    }
+    if args.json:
+        _print_json(summary)
+    else:
+        print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 
 
@@ -2888,6 +2947,38 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_quantity.add_argument("--proof-dir", default="proof", help="Directory for sanitized git-reviewable proof artifacts.")
     agency_quantity.add_argument("--json", action="store_true", help="Print a compact JSON summary.")
     agency_quantity.set_defaults(func=_handle_agency_quantity_replay)
+
+    agency_transfer = agency_sub.add_parser(
+        "transfer-proof",
+        help="Extract train-only agency rules from a stronger local teacher and test transfer on frozen holdouts.",
+    )
+    agency_transfer.add_argument("--teacher-model", default="qwen2.5:32b")
+    agency_transfer.add_argument("--student-model", default="mistral:7b-instruct")
+    agency_transfer.add_argument("--teacher-base-url", default=os.environ.get("MEMLA_TEACHER_BASE_URL", "http://127.0.0.1:11434"))
+    agency_transfer.add_argument("--student-base-url", default=os.environ.get("MEMLA_STUDENT_BASE_URL", "http://127.0.0.1:11434"))
+    agency_transfer.add_argument("--teacher-artifact", default="", help="Reuse a prior teacher_extraction.json instead of calling the teacher.")
+    agency_transfer.add_argument("--teacher-seed", type=int, default=113)
+    agency_transfer.add_argument("--teacher-num-ctx", type=int, default=8192)
+    agency_transfer.add_argument("--student-num-ctx", type=int, default=4096)
+    agency_transfer.add_argument("--trials", type=int, default=3)
+    agency_transfer.add_argument("--seed-base", type=int, default=12000)
+    agency_transfer.add_argument(
+        "--family",
+        choices=[AGENCY_TRANSFER_FAMILY_ALIAS, AGENCY_TRANSFER_FAMILY_BOUNDARY],
+        default="",
+        help="Optionally evaluate one holdout family while retaining both train fortresses for provenance.",
+    )
+    agency_transfer.add_argument(
+        "--lane",
+        action="append",
+        choices=list(AGENCY_TRANSFER_LANES),
+        default=[],
+        help="Lane to run; repeat to select a focused control set.",
+    )
+    agency_transfer.add_argument("--out-dir", default="memla_reports/agency_teacher_transfer")
+    agency_transfer.add_argument("--proof-dir", default="", help="Optional sanitized, git-reviewable proof directory.")
+    agency_transfer.add_argument("--json", action="store_true")
+    agency_transfer.set_defaults(func=_handle_agency_transfer_proof)
 
     research_parser = subparsers.add_parser("research", help="Run bounded deep-research loop capture and benchmarks.")
     research_sub = research_parser.add_subparsers(dest="research_command")
