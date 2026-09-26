@@ -164,6 +164,7 @@ from .fortresses.agency_retrieval_fortress import (
     run_retrieval_proof as run_agency_retrieval_proof,
     write_retrieval_artifacts as write_agency_retrieval_artifacts,
 )
+from .fortresses.agency_live_browser import run_live_browser_fortress
 from .fortresses.meta_fortress import GlobalTransmutationLedger
 from .ollama_client import ChatMessage, UniversalLLMClient
 from .terminal_workbench import serve_terminal_workbench
@@ -1256,6 +1257,32 @@ def _handle_agency_retrieval_proof(args: argparse.Namespace) -> int:
         _print_json(summary)
     else:
         print(json.dumps(summary, indent=2, sort_keys=True))
+    return 0
+
+
+def _handle_agency_live_browser(args: argparse.Namespace) -> int:
+    client = UniversalLLMClient(provider="ollama", base_url=args.student_base_url)
+    report = run_live_browser_fortress(
+        goal=args.goal,
+        client=client,
+        model=args.student_model,
+        cdp_url=args.cdp_url,
+        max_steps=args.max_steps,
+        seed=args.seed,
+        num_ctx=args.student_num_ctx,
+        allow_caution=args.allow_caution,
+        out_dir=args.out_dir,
+        start_url=args.start_url,
+    )
+    summary = {
+        "student_model": report["student_model"],
+        "goal": report["goal"],
+        "steps_executed": report["steps_executed"],
+        "stop_reason": report["stop_reason"],
+        "report_json": report["report_json"],
+        "final_url": report["rows"][-1]["after"]["url"] if report["rows"] else "",
+    }
+    _print_json(summary)
     return 0
 
 
@@ -3069,6 +3096,22 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_retrieval.add_argument("--proof-dir", default="")
     agency_retrieval.add_argument("--json", action="store_true")
     agency_retrieval.set_defaults(func=_handle_agency_retrieval_proof)
+
+    agency_live = agency_sub.add_parser(
+        "live-browser",
+        help="Run a bounded student policy against a real browser through Chrome DevTools.",
+    )
+    agency_live.add_argument("--goal", required=True)
+    agency_live.add_argument("--student-model", default="mistral:7b-instruct")
+    agency_live.add_argument("--student-base-url", default=os.environ.get("MEMLA_STUDENT_BASE_URL", "http://127.0.0.1:11434"))
+    agency_live.add_argument("--student-num-ctx", type=int, default=4096)
+    agency_live.add_argument("--cdp-url", default="http://127.0.0.1:9222")
+    agency_live.add_argument("--start-url", default="")
+    agency_live.add_argument("--max-steps", type=int, default=8)
+    agency_live.add_argument("--seed", type=int, default=15000)
+    agency_live.add_argument("--allow-caution", action="store_true")
+    agency_live.add_argument("--out-dir", default="memla_reports/agency_live_browser")
+    agency_live.set_defaults(func=_handle_agency_live_browser)
 
     research_parser = subparsers.add_parser("research", help="Run bounded deep-research loop capture and benchmarks.")
     research_sub = research_parser.add_subparsers(dest="research_command")
