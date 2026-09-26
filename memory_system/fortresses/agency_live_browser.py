@@ -375,8 +375,86 @@ def retrieve_live_teacher_packet(
     history: list[dict[str, Any]],
     goal: str = "",
 ) -> list[dict[str, Any]]:
-    completed = sum(1 for row in history if dict(row.get("execution") or {}).get("executed"))
     rules = list(compiled_trace.get("rules") or [])
+    consumed_trace_indices: list[int] = []
+    history_has_trace_packets = False
+    for row in history:
+        if not dict(row.get("execution") or {}).get("executed"):
+            continue
+        for packet in list(row.get("bank_packet") or []):
+            if packet.get("trace_index") is None:
+                continue
+            history_has_trace_packets = True
+            if packet.get("trace_consumes_step", True):
+                consumed_trace_indices.append(int(packet["trace_index"]))
+    completed = (
+        max(consumed_trace_indices) + 1
+        if consumed_trace_indices
+        else 0
+        if history_has_trace_packets
+        else sum(1 for row in history if dict(row.get("execution") or {}).get("executed"))
+    )
+
+    candidates = list(observation.get("candidates") or [])
+    skipped_trace_indices: list[int] = []
+    requested_quantity, current_quantity = _quantity_constraint(goal, candidates)
+    quantity_rule_index = next(
+        (
+            index
+            for index, candidate_rule in enumerate(rules)
+            if re.search(r"\b(?:increase|decrease) quantity\b", str(candidate_rule.get("target_label") or ""), re.I)
+        ),
+        None,
+    )
+    if (
+        quantity_rule_index is not None
+        and requested_quantity is not None
+        and current_quantity is not None
+        and completed >= quantity_rule_index
+    ):
+        if current_quantity == requested_quantity and completed == quantity_rule_index:
+            skipped_trace_indices.append(quantity_rule_index)
+            completed += 1
+        elif current_quantity != requested_quantity:
+            direction = "increase" if current_quantity < requested_quantity else "decrease"
+            controls = [
+                candidate
+                for candidate in candidates
+                if candidate.kind == "click"
+                and candidate.safety == "safe"
+                and re.search(rf"\b{direction} quantity\b", candidate.label, re.I)
+            ]
+            quantity_rule = dict(rules[quantity_rule_index])
+            if controls and str(quantity_rule.get("page_class") or "") == _page_class(
+                str(observation.get("url") or "")
+            ):
+                selected = controls[0]
+                return [
+                    {
+                        "source_report_hash": compiled_trace.get("source_report_hash", ""),
+                        "trace_index": quantity_rule_index,
+                        "trace_consumes_step": completed == quantity_rule_index,
+                        "trace_skipped_indices": [],
+                        "applicable_page_class": quantity_rule.get("page_class"),
+                        "binding_mode": "state_conditioned_quantity",
+                        "goal_adapted": goal != str(compiled_trace.get("goal") or ""),
+                        "destination_domain_mode": "not_applicable",
+                        "required_next_action": {
+                            "action": "click",
+                            "candidate_id": selected.candidate_id,
+                            "candidate_label": selected.label,
+                            "text": "",
+                        },
+                        "text_policy": "",
+                        "teacher_reason": "",
+                        "quantity_policy": {
+                            "requested": requested_quantity,
+                            "observed": current_quantity,
+                            "direction": direction,
+                            "distance_before": abs(requested_quantity - current_quantity),
+                        },
+                    }
+                ]
     if completed >= len(rules):
         return []
     rule = dict(rules[completed])
@@ -389,6 +467,8 @@ def retrieve_live_teacher_packet(
             {
                 "source_report_hash": compiled_trace.get("source_report_hash", ""),
                 "trace_index": rule.get("trace_index"),
+                "trace_consumes_step": True,
+                "trace_skipped_indices": skipped_trace_indices,
                 "applicable_page_class": rule.get("page_class"),
                 "binding_mode": "terminal_boundary" if terminal else "reversible_viewport_action",
                 "goal_adapted": goal_adapted,
@@ -403,7 +483,6 @@ def retrieve_live_teacher_packet(
                 "teacher_reason": "" if goal_adapted else rule.get("teacher_reason", ""),
             }
         ]
-    candidates = list(observation.get("candidates") or [])
     same_kind = [
         candidate
         for candidate in candidates
@@ -470,6 +549,8 @@ def retrieve_live_teacher_packet(
         {
             "source_report_hash": compiled_trace.get("source_report_hash", ""),
             "trace_index": rule.get("trace_index"),
+            "trace_consumes_step": True,
+            "trace_skipped_indices": skipped_trace_indices,
             "applicable_page_class": rule.get("page_class"),
             "binding_mode": binding_mode,
             "goal_adapted": goal_adapted,
@@ -1019,6 +1100,7 @@ def build_live_transfer_proof(
             "report_hash": _stable_hash(report),
             "student_model": report.get("student_model", ""),
             "goal": report.get("goal", ""),
+            "goal": report.get("goal", ""),
             "start_url": report.get("start_url", ""),
             "teacher_trace_hash": report.get("teacher_trace_hash", ""),
             "steps_executed": report.get("steps_executed", 0),
@@ -1181,10 +1263,12 @@ def build_live_trace_completion_proof(
         rows = list(report.get("rows") or [])
         sequence: list[dict[str, Any]] = []
         matches: list[bool] = []
-        packet_matches: list[bool] = []
         selected_labels: list[str] = []
         transaction_progression_executions = 0
         visible_quantities: list[int] = []
+        packet_row_matches: list[bool] = []
+        represented_trace_indices: set[int] = set()
+        packet_terminal_followed = False
         for index, rule in enumerate(rules):
             row = dict(rows[index]) if index < len(rows) else {}
             decision = dict(row.get("decision") or {})
@@ -1194,8 +1278,6 @@ def build_live_trace_completion_proof(
                 {},
             )
             execution = dict(row.get("execution") or {})
-            packet = list(row.get("bank_packet") or [])
-            required = dict(packet[0].get("required_next_action") or {}) if packet else {}
             terminal = str(rule.get("action") or "") in {"stop", "ask"}
             matched = (
                 decision.get("action") == rule.get("action")
@@ -1205,11 +1287,6 @@ def build_live_trace_completion_proof(
                 and (terminal or execution.get("executed") is True)
             )
             matches.append(bool(matched))
-            packet_matched = bool(required) and all(
-                str(decision.get(field) or "") == str(required.get(field) or "")
-                for field in ("action", "candidate_id", "text")
-            )
-            packet_matches.append(packet_matched)
             if selected.get("label"):
                 selected_labels.append(str(selected["label"]))
             sequence.append(
@@ -1223,13 +1300,34 @@ def build_live_trace_completion_proof(
                 }
             )
         for row in rows:
+            decision = dict(row.get("decision") or {})
+            execution = dict(row.get("execution") or {})
+            packet = list(row.get("bank_packet") or [])
+            if packet:
+                packet_rule = dict(packet[0])
+                required = dict(packet_rule.get("required_next_action") or {})
+                packet_matched = bool(required) and all(
+                    str(decision.get(field) or "") == str(required.get(field) or "")
+                    for field in ("action", "candidate_id", "text")
+                )
+                if required.get("action") in {"stop", "ask"}:
+                    packet_matched = packet_matched and execution.get("status") == required.get("action")
+                    packet_terminal_followed = packet_terminal_followed or packet_matched
+                else:
+                    packet_matched = packet_matched and execution.get("executed") is True
+                packet_row_matches.append(bool(packet_matched))
+                if packet_matched and packet_rule.get("trace_consumes_step", True):
+                    represented_trace_indices.add(int(packet_rule["trace_index"]))
+                if packet_matched:
+                    represented_trace_indices.update(
+                        int(value) for value in list(packet_rule.get("trace_skipped_indices") or [])
+                    )
             for candidate in list(dict(row.get("before") or {}).get("candidates") or []):
                 match = re.search(r"\bcurrent quantity is\s*(\d+)\b", str(candidate.get("label") or ""), re.I)
                 if match:
                     visible_quantities.append(int(match.group(1)))
-            if not dict(row.get("execution") or {}).get("executed"):
+            if not execution.get("executed"):
                 continue
-            decision = dict(row.get("decision") or {})
             selected = next(
                 (
                     dict(item)
@@ -1246,7 +1344,12 @@ def build_live_trace_completion_proof(
             "teacher_trace_hash": report.get("teacher_trace_hash", ""),
             "stop_reason": report.get("stop_reason", ""),
             "trace_complete": bool(rules) and all(matches),
-            "adapted_packet_sequence_complete": bool(rules) and all(packet_matches),
+            "adapted_packet_sequence_complete": (
+                bool(rules)
+                and bool(packet_row_matches)
+                and all(packet_row_matches)
+                and set(range(len(rules))).issubset(represented_trace_indices)
+            ),
             "required_selected_terms": list(required_selected_terms or []),
             "selected_term_evidence_complete": all(
                 term.lower() in " ".join(selected_labels).lower() for term in (required_selected_terms or [])
@@ -1256,7 +1359,11 @@ def build_live_trace_completion_proof(
             "quantity_evidence_complete": (
                 required_visible_quantity is None or required_visible_quantity in visible_quantities
             ),
-            "terminal_rule_followed": bool(rules) and rules[-1].get("action") in {"stop", "ask"} and bool(matches[-1]),
+            "terminal_rule_followed": (
+                bool(rules)
+                and rules[-1].get("action") in {"stop", "ask"}
+                and (bool(matches[-1]) or packet_terminal_followed)
+            ),
             "transaction_progression_executions": transaction_progression_executions,
             "sequence": sequence,
         }
@@ -1275,6 +1382,7 @@ def build_live_trace_completion_proof(
         "teacher": {
             "model": trace.get("source_model", ""),
             "report_hash": trace.get("source_report_hash", ""),
+            "goal": trace.get("goal", ""),
             "compiled_rules": rules,
         },
         "raw": raw,
@@ -1311,11 +1419,14 @@ def write_live_trace_completion_proof(report: dict[str, Any], out_dir: str | Pat
         else "# Agency Live Item-Sequence Proof",
         "",
         f"- Teacher: `{dict(report.get('teacher') or {}).get('model', '')}`",
+        f"- Teacher goal: `{dict(report.get('teacher') or {}).get('goal', '')}`",
+        f"- Student goal: `{bank.get('goal', '')}`",
         f"- Raw trace complete: `{raw.get('trace_complete', False)}`",
         f"- Bank trace complete: `{bank.get('trace_complete', False)}`",
         f"- Bank adapted packet sequence complete: `{bank.get('adapted_packet_sequence_complete', False)}`",
         f"- Required selected-term evidence complete: `{bank.get('selected_term_evidence_complete', False)}`",
         f"- Required quantity evidence complete: `{bank.get('quantity_evidence_complete', False)}`",
+        f"- Bank visible quantities: `{bank.get('visible_quantities', [])}`",
         f"- Bank terminal stop followed: `{bank.get('terminal_rule_followed', False)}`",
         f"- Teacher calls in student runs: `{authenticity.get('teacher_calls_in_student_runs', 0)}`",
         f"- Transaction progression actions executed: `{raw.get('transaction_progression_executions', 0) + bank.get('transaction_progression_executions', 0)}`",

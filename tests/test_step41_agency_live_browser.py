@@ -108,6 +108,150 @@ def test_live_quantity_verifier_only_allows_progress_toward_requested_count():
     assert "moves visible quantity 2 away" in reason
 
 
+def test_quantity_trace_repeats_adjustment_without_consuming_next_teacher_rule():
+    report = {
+        "fortress_id": "live",
+        "student_model": "teacher",
+        "goal": "Select cheese, set quantity to 2, then select large",
+        "rows": [
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/example",
+                    "candidates": [_candidate(1, "Cheese Pizza").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c001", "text": "", "reason": "item"},
+                "execution": {"executed": True},
+            },
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/example",
+                    "candidates": [_candidate(2, "Increase quantity by 1", tag="button").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c002", "text": "", "reason": "quantity"},
+                "execution": {"executed": True},
+            },
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/example",
+                    "candidates": [_candidate(3, "Large", tag="label").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c003", "text": "", "reason": "size"},
+                "execution": {"executed": True},
+            },
+        ],
+    }
+    trace = compile_live_teacher_trace(report)
+    plus = _candidate(7, "Increase quantity by 1", tag="button")
+    large = _candidate(8, "Large", tag="label")
+
+    def observation(quantity: int) -> dict:
+        return {
+            "url": "https://www.doordash.com/store/example",
+            "candidates": [plus, _candidate(9, f"Current quantity is {quantity}", tag="input"), large],
+        }
+
+    item_history = [
+        {
+            "execution": {"executed": True},
+            "bank_packet": [{"trace_index": 0, "trace_consumes_step": True}],
+        }
+    ]
+    first_increment = retrieve_live_teacher_packet(
+        compiled_trace=trace,
+        observation=observation(1),
+        history=item_history,
+        goal="Select cheese, set quantity to 3, then select large",
+    )
+    assert first_increment[0]["binding_mode"] == "state_conditioned_quantity"
+    assert first_increment[0]["trace_consumes_step"] is True
+    assert first_increment[0]["required_next_action"]["candidate_id"] == "c007"
+
+    increment_history = item_history + [
+        {
+            "execution": {"executed": True},
+            "bank_packet": first_increment,
+        }
+    ]
+    second_increment = retrieve_live_teacher_packet(
+        compiled_trace=trace,
+        observation=observation(2),
+        history=increment_history,
+        goal="Select cheese, set quantity to 3, then select large",
+    )
+    assert second_increment[0]["trace_index"] == 1
+    assert second_increment[0]["trace_consumes_step"] is False
+
+    completed_quantity_history = increment_history + [
+        {
+            "execution": {"executed": True},
+            "bank_packet": second_increment,
+        }
+    ]
+    next_rule = retrieve_live_teacher_packet(
+        compiled_trace=trace,
+        observation=observation(3),
+        history=completed_quantity_history,
+        goal="Select cheese, set quantity to 3, then select large",
+    )
+    assert next_rule[0]["trace_index"] == 2
+    assert next_rule[0]["required_next_action"]["candidate_id"] == "c008"
+
+    minus = _candidate(10, "Decrease quantity by 1", tag="button")
+    decrement = retrieve_live_teacher_packet(
+        compiled_trace=trace,
+        observation={
+            "url": "https://www.doordash.com/store/example",
+            "candidates": [minus, _candidate(9, "Current quantity is 3", tag="input"), large],
+        },
+        history=item_history,
+        goal="Select cheese, set quantity to 2, then select large",
+    )
+    assert decrement[0]["quantity_policy"]["direction"] == "decrease"
+    assert decrement[0]["required_next_action"]["candidate_id"] == "c010"
+
+
+def test_quantity_trace_skips_teacher_adjustment_when_target_is_already_met():
+    report = {
+        "fortress_id": "live",
+        "student_model": "teacher",
+        "goal": "Set quantity to 2 and select large",
+        "rows": [
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/example",
+                    "candidates": [_candidate(2, "Increase quantity by 1", tag="button").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c002", "text": "", "reason": "quantity"},
+                "execution": {"executed": True},
+            },
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/example",
+                    "candidates": [_candidate(3, "Large", tag="label").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c003", "text": "", "reason": "size"},
+                "execution": {"executed": True},
+            },
+        ],
+    }
+    trace = compile_live_teacher_trace(report)
+    packet = retrieve_live_teacher_packet(
+        compiled_trace=trace,
+        observation={
+            "url": "https://www.doordash.com/store/example",
+            "candidates": [
+                _candidate(7, "Increase quantity by 1", tag="button"),
+                _candidate(8, "Current quantity is 1", tag="input"),
+                _candidate(9, "Large", tag="label"),
+            ],
+        },
+        history=[],
+        goal="Set quantity to 1 and select large",
+    )
+    assert packet[0]["trace_index"] == 1
+    assert packet[0]["required_next_action"]["candidate_id"] == "c009"
+
+
 def test_live_teacher_trace_compiles_and_rebinds_affordance_not_dom_id():
     report = {
         "fortress_id": "live",
