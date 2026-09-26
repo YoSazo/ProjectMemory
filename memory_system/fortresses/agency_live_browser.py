@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from ..ollama_client import ChatMessage, UniversalLLMClient
 
@@ -58,10 +59,19 @@ class LiveCandidate:
     safety_reason: str
     fingerprint: str
 
+    @property
+    def kind(self) -> str:
+        non_text_input_types = {"button", "checkbox", "file", "hidden", "image", "radio", "reset", "submit"}
+        if self.tag == "textarea" or self.input_type == "contenteditable":
+            return "type"
+        if self.tag == "input" and self.input_type.lower() not in non_text_input_types:
+            return "type"
+        return "click"
+
     def public(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
-            "kind": "type" if self.tag in {"input", "textarea"} or self.input_type == "contenteditable" else "click",
+            "kind": self.kind,
             "label": self.label,
             "href": self.href,
             "safety": self.safety,
@@ -76,11 +86,15 @@ def candidate_fingerprint(*, tag: str, label: str, href: str, input_type: str) -
 def rank_candidates(candidates: list[LiveCandidate], goal: str, *, limit: int = 36) -> list[LiveCandidate]:
     goal_tokens = _tokens(goal)
 
-    def score(candidate: LiveCandidate) -> tuple[int, int, int]:
+    def score(candidate: LiveCandidate) -> tuple[int, int, int, int]:
         overlap = len(goal_tokens.intersection(_tokens(f"{candidate.label} {candidate.href}")))
+        search_or_text_control = int(
+            candidate.kind == "type"
+            and ("search" in candidate.label.lower() or candidate.tag in {"input", "textarea"})
+        )
         input_or_button = int(candidate.tag in {"input", "textarea", "button"})
         safe = int(candidate.safety == "safe")
-        return overlap, input_or_button, safe
+        return overlap, search_or_text_control, input_or_button, safe
 
     ranked = sorted(candidates, key=lambda candidate: (score(candidate), -candidate.dom_index), reverse=True)
     return ranked[: max(1, int(limit))]
@@ -122,8 +136,19 @@ def verify_live_decision(
     goal: str,
     *,
     allow_caution: bool = False,
+    bank_packet: list[dict[str, Any]] | None = None,
 ) -> tuple[bool, str]:
     action = decision["action"]
+    packet = list(bank_packet or [])
+    if packet:
+        required = dict(packet[0].get("required_next_action") or {})
+        for field in ("action", "candidate_id"):
+            expected = str(required.get(field) or "")
+            if expected and str(decision.get(field) or "") != expected:
+                return False, f"verified procedural memory requires {field}={expected!r}"
+        expected_text = str(required.get("text") or "")
+        if expected_text and str(decision.get("text") or "") != expected_text:
+            return False, f"verified procedural memory requires text={expected_text!r}"
     if action in {"stop", "ask"}:
         return True, ""
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
@@ -147,9 +172,29 @@ def verify_live_decision(
         if not text:
             return False, "type action requires non-empty text"
         goal_text = " ".join(goal.lower().split())
-        if text.lower() not in goal_text:
+        if not _tokens(text).issubset(_tokens(goal_text)):
             return False, "typed text must be directly present in the user's goal"
     return True, ""
+
+
+def canonicalize_bank_candidate_id(
+    decision: dict[str, str] | None,
+    bank_packet: list[dict[str, Any]] | None,
+) -> tuple[dict[str, str] | None, bool]:
+    if decision is None or not bank_packet:
+        return decision, False
+    required = dict(list(bank_packet)[0].get("required_next_action") or {})
+    expected = str(required.get("candidate_id") or "")
+    actual = str(decision.get("candidate_id") or "")
+    expected_match = re.fullmatch(r"([a-zA-Z]+)(\d+)", expected)
+    actual_match = re.fullmatch(r"([a-zA-Z]+)(\d+)", actual)
+    if not expected_match or not actual_match:
+        return decision, False
+    same_prefix = expected_match.group(1).lower() == actual_match.group(1).lower()
+    same_number = int(expected_match.group(2)) == int(actual_match.group(2))
+    if not (same_prefix and same_number) or actual == expected:
+        return decision, False
+    return {**decision, "candidate_id": expected}, True
 
 
 def build_live_messages(
@@ -160,13 +205,15 @@ def build_live_messages(
     visible_text: str,
     candidates: list[LiveCandidate],
     history: list[dict[str, Any]],
+    bank_packet: list[dict[str, Any]] | None = None,
 ) -> list[ChatMessage]:
     system = (
         "OUTPUT ONE JSON OBJECT AND NOTHING ELSE. You control a real browser through a bounded observe-act-reobserve "
         "loop. Select exactly one listed candidate "
         "or stop/ask. Never invent candidate IDs. Prefer reversible progress. Never select blocked controls, sign-in, "
         "account creation, payment, purchase, or order submission. Stop before checkout or any transaction boundary. "
-        "For a type action, text must be directly supported by the user's goal. Return only JSON shaped as "
+        "For a type action, text must be directly supported by the user's goal. Treat a bank_packet "
+        "required_next_action as verified procedural memory and follow it exactly. Return only JSON shaped as "
         '{"action":"click|type|stop|ask","candidate_id":"c000 or empty","text":"","reason":""}.'
     )
     state = {
@@ -182,10 +229,111 @@ def build_live_messages(
             }
             for row in history[-4:]
         ],
+        "bank_packet": list(bank_packet or []),
     }
     return [
         ChatMessage(role="system", content=system),
         ChatMessage(role="user", content=json.dumps(state, indent=2, sort_keys=True)),
+    ]
+
+
+def _page_class(url: str) -> str:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().removeprefix("www.")
+    if host == "google.com" and parsed.path in {"", "/"}:
+        return "google_home"
+    if host == "google.com" and parsed.path.startswith("/search"):
+        return "google_results"
+    if host.endswith("doordash.com"):
+        return "doordash"
+    return f"{host}{parsed.path}"
+
+
+def compile_live_teacher_trace(report: dict[str, Any]) -> dict[str, Any]:
+    rules: list[dict[str, Any]] = []
+    for row in list(report.get("rows") or []):
+        if not dict(row.get("execution") or {}).get("executed"):
+            continue
+        decision = dict(row.get("decision") or {})
+        candidate_id = str(decision.get("candidate_id") or "")
+        candidate = next(
+            (
+                dict(item)
+                for item in list(dict(row.get("before") or {}).get("candidates") or [])
+                if str(item.get("candidate_id") or "") == candidate_id
+            ),
+            {},
+        )
+        if not candidate:
+            continue
+        rules.append(
+            {
+                "trace_index": len(rules),
+                "page_class": _page_class(str(dict(row.get("before") or {}).get("url") or "")),
+                "action": str(decision.get("action") or ""),
+                "target_kind": str(candidate.get("kind") or ""),
+                "target_label": str(candidate.get("label") or ""),
+                "target_href": str(candidate.get("href") or ""),
+                "text": str(decision.get("text") or ""),
+                "teacher_reason": str(decision.get("reason") or ""),
+            }
+        )
+    return {
+        "source_fortress_id": report.get("fortress_id", ""),
+        "source_model": report.get("student_model", ""),
+        "source_report_hash": _stable_hash(report),
+        "goal": report.get("goal", ""),
+        "rules": rules,
+    }
+
+
+def retrieve_live_teacher_packet(
+    *,
+    compiled_trace: dict[str, Any],
+    observation: dict[str, Any],
+    history: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    completed = sum(1 for row in history if dict(row.get("execution") or {}).get("executed"))
+    rules = list(compiled_trace.get("rules") or [])
+    if completed >= len(rules):
+        return []
+    rule = dict(rules[completed])
+    if str(rule.get("page_class") or "") != _page_class(str(observation.get("url") or "")):
+        return []
+    candidates = list(observation.get("candidates") or [])
+    same_kind = [candidate for candidate in candidates if candidate.kind == str(rule.get("target_kind") or "")]
+    exact = [candidate for candidate in same_kind if candidate.label == str(rule.get("target_label") or "")]
+    if exact:
+        selected = exact[0]
+        binding_mode = "exact_affordance"
+    elif same_kind:
+        target_tokens = _tokens(f"{rule.get('target_label', '')} {rule.get('target_href', '')}")
+        scored = sorted(
+            same_kind,
+            key=lambda candidate: len(target_tokens.intersection(_tokens(f"{candidate.label} {candidate.href}"))),
+            reverse=True,
+        )
+        selected = scored[0]
+        overlap = len(target_tokens.intersection(_tokens(f"{selected.label} {selected.href}")))
+        if overlap == 0:
+            return []
+        binding_mode = "semantic_affordance"
+    else:
+        return []
+    return [
+        {
+            "source_report_hash": compiled_trace.get("source_report_hash", ""),
+            "trace_index": rule.get("trace_index"),
+            "applicable_page_class": rule.get("page_class"),
+            "binding_mode": binding_mode,
+            "required_next_action": {
+                "action": rule.get("action"),
+                "candidate_id": selected.candidate_id,
+                "candidate_label": selected.label,
+                "text": rule.get("text", ""),
+            },
+            "teacher_reason": rule.get("teacher_reason", ""),
+        }
     ]
 
 
@@ -205,10 +353,19 @@ class PlaywrightCDPBridge:
             raise RuntimeError("The CDP browser has no page.")
         self.page = pages[0]
 
+    def _ensure_page(self) -> None:
+        if not self.page.is_closed():
+            return
+        pages = [page for context in self.browser.contexts for page in context.pages if not page.is_closed()]
+        if not pages:
+            raise RuntimeError("The CDP browser has no live page.")
+        self.page = pages[-1]
+
     def close(self) -> None:
         self._manager.stop()
 
     def observe(self, goal: str, *, limit: int = 36) -> dict[str, Any]:
+        self._ensure_page()
         locator = self.page.locator(INTERACTIVE_SELECTOR)
         candidates: list[LiveCandidate] = []
         for dom_index in range(min(locator.count(), 500)):
@@ -227,7 +384,8 @@ class PlaywrightCDPBridge:
                     ).split()
                 )[:240]
                 href = str(element.get_attribute("href") or "")[:500]
-                input_type = str(element.get_attribute("type") or ("contenteditable" if tag == "div" else ""))
+                contenteditable = str(element.get_attribute("contenteditable") or "").lower() == "true"
+                input_type = str(element.get_attribute("type") or ("contenteditable" if contenteditable else ""))
                 if not label and not href:
                     continue
                 safety, reason = classify_candidate_safety(label, href)
@@ -261,6 +419,7 @@ class PlaywrightCDPBridge:
         }
 
     def execute(self, decision: dict[str, str], observation: dict[str, Any], *, allow_caution: bool = False) -> dict[str, Any]:
+        self._ensure_page()
         action = decision["action"]
         if action in {"stop", "ask"}:
             return {"status": action, "executed": False, "reason": decision.get("reason", "")}
@@ -286,14 +445,15 @@ class PlaywrightCDPBridge:
                 ).split()
             )[:240]
             current_href = str(element.get_attribute("href") or "")[:500]
-            current_type = str(element.get_attribute("type") or ("contenteditable" if current_tag == "div" else ""))
+            current_contenteditable = str(element.get_attribute("contenteditable") or "").lower() == "true"
+            current_type = str(element.get_attribute("type") or ("contenteditable" if current_contenteditable else ""))
             current_fingerprint = candidate_fingerprint(
                 tag=current_tag, label=current_label, href=current_href, input_type=current_type
             )
             if current_fingerprint != candidate.fingerprint or not element.is_visible():
                 return {"status": "blocked", "executed": False, "reason": "stale_candidate_fingerprint"}
             if action == "type":
-                if candidate.tag not in {"input", "textarea"} and candidate.input_type != "contenteditable":
+                if candidate.kind != "type":
                     return {"status": "blocked", "executed": False, "reason": "candidate_not_typeable"}
                 text = decision.get("text", "")
                 if not text:
@@ -310,6 +470,7 @@ class PlaywrightCDPBridge:
             return {"status": "error", "executed": False, "reason": str(exc)[:500]}
 
     def screenshot(self, path: Path) -> None:
+        self._ensure_page()
         path.parent.mkdir(parents=True, exist_ok=True)
         self.page.screenshot(path=str(path), full_page=False)
 
@@ -326,6 +487,7 @@ def run_live_browser_fortress(
     allow_caution: bool = False,
     out_dir: str | Path = "memla_reports/agency_live_browser",
     start_url: str = "",
+    teacher_trace: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
@@ -345,6 +507,7 @@ def run_live_browser_fortress(
             "max_steps": max_steps,
             "allow_caution": allow_caution,
             "teacher_calls": 0,
+            "teacher_trace_hash": str((teacher_trace or {}).get("source_report_hash") or ""),
             "stop_reason": current_stop_reason,
             "steps_executed": sum(1 for row in rows if row["execution"]["executed"]),
             "rows": rows,
@@ -360,6 +523,15 @@ def run_live_browser_fortress(
             observation = bridge.observe(goal)
             screenshot_path = root / f"step_{step_index:02d}_before.png"
             bridge.screenshot(screenshot_path)
+            bank_packet = (
+                retrieve_live_teacher_packet(
+                    compiled_trace=teacher_trace,
+                    observation=observation,
+                    history=rows,
+                )
+                if teacher_trace
+                else []
+            )
             messages = build_live_messages(
                 goal=goal,
                 url=observation["url"],
@@ -367,6 +539,7 @@ def run_live_browser_fortress(
                 visible_text=observation["visible_text"],
                 candidates=observation["candidates"],
                 history=rows,
+                bank_packet=bank_packet,
             )
             started = time.time()
             try:
@@ -410,6 +583,7 @@ def run_live_browser_fortress(
             decision, parse_mode = parse_live_decision(response.content)
             response_text = response.content
             repair_count = 0
+            candidate_id_canonicalized = False
             while decision is None and repair_count < 2:
                 repair_count += 1
                 repair_messages = [
@@ -440,6 +614,7 @@ def run_live_browser_fortress(
                     break
                 response_text = repaired.content
                 decision, parse_mode = parse_live_decision(response_text)
+            decision, candidate_id_canonicalized = canonicalize_bank_candidate_id(decision, bank_packet)
             action_repair_count = 0
             decision_ok = False
             decision_feedback = parse_mode if decision is None else ""
@@ -449,6 +624,7 @@ def run_live_browser_fortress(
                     observation["candidates"],
                     goal,
                     allow_caution=allow_caution,
+                    bank_packet=bank_packet,
                 )
             while decision is not None and not decision_ok and action_repair_count < 2:
                 action_repair_count += 1
@@ -483,11 +659,14 @@ def run_live_browser_fortress(
                 if decision is None:
                     decision_feedback = parse_mode
                     break
+                decision, repaired_canonicalized = canonicalize_bank_candidate_id(decision, bank_packet)
+                candidate_id_canonicalized = candidate_id_canonicalized or repaired_canonicalized
                 decision_ok, decision_feedback = verify_live_decision(
                     decision,
                     observation["candidates"],
                     goal,
                     allow_caution=allow_caution,
+                    bank_packet=bank_packet,
                 )
             if decision is None:
                 execution = {"status": "blocked", "executed": False, "reason": parse_mode}
@@ -497,7 +676,22 @@ def run_live_browser_fortress(
                 stop_reason = decision_feedback
             else:
                 execution = bridge.execute(decision, observation, allow_caution=allow_caution)
-            after = bridge.observe(goal)
+            try:
+                after = bridge.observe(goal)
+                after_summary = {"url": after["url"], "title": after["title"], "state_hash": after["state_hash"]}
+            except Exception as exc:
+                after_summary = {
+                    "url": observation["url"],
+                    "title": observation["title"],
+                    "state_hash": observation["state_hash"],
+                    "observation_error": str(exc)[:500],
+                }
+                if execution["executed"]:
+                    execution = {
+                        **execution,
+                        "status": "executed_reobserve_failed",
+                        "reason": f"post_action_observation_failed:{str(exc)[:300]}",
+                    }
             row = {
                 "step_index": step_index,
                 "before": {
@@ -512,10 +706,12 @@ def run_live_browser_fortress(
                 "parse_mode": parse_mode,
                 "format_repair_count": repair_count,
                 "action_repair_count": action_repair_count,
+                "candidate_id_canonicalized": candidate_id_canonicalized,
+                "bank_packet": bank_packet,
                 "student_response": response_text,
                 "student_response_hash": _stable_hash(response_text),
                 "execution": execution,
-                "after": {"url": after["url"], "title": after["title"], "state_hash": after["state_hash"]},
+                "after": after_summary,
                 "latency_ms": int((time.time() - started) * 1000),
             }
             rows.append(row)
@@ -528,3 +724,125 @@ def run_live_browser_fortress(
     report = checkpoint(stop_reason)
     report["report_json"] = str(json_path)
     return report
+
+
+def build_live_transfer_proof(
+    *,
+    teacher_report: dict[str, Any],
+    raw_reports: list[dict[str, Any]],
+    bank_reports: list[dict[str, Any]],
+    required_final_url_terms: list[str],
+) -> dict[str, Any]:
+    if len(raw_reports) != len(bank_reports):
+        raise ValueError("Raw and bank report counts must match.")
+
+    def summarize(report: dict[str, Any]) -> dict[str, Any]:
+        rows = list(report.get("rows") or [])
+        final_url = str(dict(rows[-1].get("after") or {}).get("url") or "") if rows else ""
+        success = all(term.lower() in final_url.lower() for term in required_final_url_terms)
+        return {
+            "report_hash": _stable_hash(report),
+            "student_model": report.get("student_model", ""),
+            "goal": report.get("goal", ""),
+            "start_url": report.get("start_url", ""),
+            "teacher_trace_hash": report.get("teacher_trace_hash", ""),
+            "steps_executed": report.get("steps_executed", 0),
+            "stop_reason": report.get("stop_reason", ""),
+            "final_url": final_url,
+            "success": success,
+            "unsafe_executions": sum(
+                1
+                for row in rows
+                if dict(row.get("execution") or {}).get("executed")
+                and any(
+                    candidate.get("candidate_id") == dict(row.get("decision") or {}).get("candidate_id")
+                    and candidate.get("safety") != "safe"
+                    for candidate in list(dict(row.get("before") or {}).get("candidates") or [])
+                )
+            ),
+            "steps": [
+                {
+                    "step_index": row.get("step_index"),
+                    "action": dict(row.get("decision") or {}).get("action", ""),
+                    "candidate_id": dict(row.get("decision") or {}).get("candidate_id", ""),
+                    "candidate_id_canonicalized": row.get("candidate_id_canonicalized", False),
+                    "bank_packet_present": bool(row.get("bank_packet")),
+                    "execution_status": dict(row.get("execution") or {}).get("status", ""),
+                    "after_url": dict(row.get("after") or {}).get("url", ""),
+                }
+                for row in rows
+            ],
+        }
+
+    teacher_trace = compile_live_teacher_trace(teacher_report)
+    raw = [summarize(report) for report in raw_reports]
+    bank = [summarize(report) for report in bank_reports]
+    teacher_calls_in_student_runs = sum(
+        int(report.get("teacher_calls") or 0) for report in [*raw_reports, *bank_reports]
+    )
+    pairs = [
+        {
+            "pair_index": index,
+            "raw_success": raw_row["success"],
+            "bank_success": bank_row["success"],
+            "raw_report_hash": raw_row["report_hash"],
+            "bank_report_hash": bank_row["report_hash"],
+        }
+        for index, (raw_row, bank_row) in enumerate(zip(raw, bank))
+    ]
+    return {
+        "proof_id": "agency_live_teacher_transfer_v0",
+        "generated_ts": int(time.time()),
+        "required_final_url_terms": required_final_url_terms,
+        "teacher": {
+            "model": teacher_trace.get("source_model", ""),
+            "report_hash": teacher_trace.get("source_report_hash", ""),
+            "source_stop_reason": teacher_report.get("stop_reason", ""),
+            "source_steps_executed": teacher_report.get("steps_executed", 0),
+            "compiled_successful_steps": len(teacher_trace.get("rules", [])),
+            "source_report_complete": teacher_report.get("stop_reason") not in {"", "in_progress"},
+            "compiled_rules": teacher_trace.get("rules", []),
+        },
+        "raw_successes": sum(1 for row in raw if row["success"]),
+        "bank_successes": sum(1 for row in bank if row["success"]),
+        "paired_trials": len(pairs),
+        "pairs": pairs,
+        "raw_reports": raw,
+        "bank_reports": bank,
+        "authenticity": {
+            "teacher_calls_in_student_runs": teacher_calls_in_student_runs,
+            "all_bank_runs_use_teacher_trace": all(bool(row["teacher_trace_hash"]) for row in bank),
+            "all_raw_runs_have_no_teacher_trace": all(not row["teacher_trace_hash"] for row in raw),
+            "all_executed_actions_safe": all(row["unsafe_executions"] == 0 for row in [*raw, *bank]),
+            "seed_replications_are_independent_cases": False,
+        },
+    }
+
+
+def write_live_transfer_proof(report: dict[str, Any], out_dir: str | Path) -> dict[str, str]:
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    json_path = root / "agency_live_teacher_transfer.json"
+    markdown_path = root / "agency_live_teacher_transfer.md"
+    json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    lines = [
+        "# Agency Live Teacher Transfer Proof",
+        "",
+        f"- Teacher: `{dict(report.get('teacher') or {}).get('model', '')}`",
+        f"- Compiled successful teacher steps: `{dict(report.get('teacher') or {}).get('compiled_successful_steps', 0)}`",
+        f"- Teacher source stop reason: `{dict(report.get('teacher') or {}).get('source_stop_reason', '')}`",
+        f"- Paired seed replications: `{report.get('paired_trials', 0)}`",
+        f"- Raw successes: `{report.get('raw_successes', 0)}/{report.get('paired_trials', 0)}`",
+        f"- Bank-assisted successes: `{report.get('bank_successes', 0)}/{report.get('paired_trials', 0)}`",
+        f"- Teacher calls in student runs: `{dict(report.get('authenticity') or {}).get('teacher_calls_in_student_runs', 0)}`",
+        f"- All executed actions safe: `{dict(report.get('authenticity') or {}).get('all_executed_actions_safe', False)}`",
+        "",
+        "## Interpretation",
+        "",
+        "The same frozen teacher trace was compiled into affordance-bound procedural capsules for each live run. "
+        "These are seed replications of one task, not independent task cases; this is a live transfer signal, not a generality claim.",
+        "The preserved teacher source report contains three successful actions and has stop reason `in_progress`; "
+        "only those completed actions were compiled.",
+    ]
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"report_json": str(json_path), "report_markdown": str(markdown_path)}

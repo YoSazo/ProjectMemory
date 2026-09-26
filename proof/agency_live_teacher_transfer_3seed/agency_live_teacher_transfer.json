@@ -1,0 +1,305 @@
+{
+  "authenticity": {
+    "all_bank_runs_use_teacher_trace": true,
+    "all_executed_actions_safe": true,
+    "all_raw_runs_have_no_teacher_trace": true,
+    "seed_replications_are_independent_cases": false,
+    "teacher_calls_in_student_runs": 0
+  },
+  "bank_reports": [
+    {
+      "final_url": "https://www.doordash.com/store/domino's-chicago-33936979/64604948/",
+      "goal": "Find the Domino's DoorDash page for Chicago and stop before adding anything or checkout.",
+      "report_hash": "f77c2a709e35a30b483057b48892a58438d4cf433f111eafd47cea9e1caed94e",
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": true,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.google.com/search?q=Domino%27s+DoorDash+Chicago&sca_esv=700c7e79aa3b521d&sxsrf=APpeQnvOCqh9JvjMdZxsrcFnQmeI6HyJDw%3A1790438140770&source=hp&ei=_Oq3avHxLOzumLQPybHq8QI&iflsig=ABILxe8AAAAAarf5DEXcuWxa2rNMpT7X7bxpYfwAeot7&ved=0ahUKEwjx3_vqzYyXAxVsN4YAHcmYOi4Q4dUDCCI&oq=Domino%27s+DoorDash+Chicago&gs_lp=Egdnd3Mtd2l6IhlEb21pbm8ncyBEb29yRGFzaCBDaGljYWdvMgUQIRigATIFECEYoAEyBRAhGKABMgUQIRigATIFECEYoAFI7UpQAFgAcAB4AJABAJgBPKABPKoBATG4AQzIAQD4AQGYAgGgAkiYAwCSBwExoAf9A7IHATG4B0jCBwMyLTHIBwWACAE&sclient=gws-wiz",
+          "bank_packet_present": true,
+          "candidate_id": "c039",
+          "candidate_id_canonicalized": true,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.doordash.com/en/city/chicago-il/b/domino's-13486/?srsltid=AU7gw4Wa4pdAEMLqIHVUF95-eHY-B02Kpqj4pI8Z1lxRICXxVP50HFjp",
+          "bank_packet_present": true,
+          "candidate_id": "c160",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.doordash.com/store/domino's-chicago-33936979/64604948/",
+          "bank_packet_present": false,
+          "candidate_id": "c009",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 3
+        }
+      ],
+      "steps_executed": 4,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": true,
+      "teacher_trace_hash": "7c6861a8776d7c2e642fb2412ab879f5d5ab6c67a64369fcf05c206961968016",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.doordash.com/en/city/chicago-il/b/domino's-13486/?srsltid=AU7gw4VPyl6dC9tAWjraZoOJtP3oQdP1Lx1xd_dnMKEmAPNX3P2wSF9U",
+      "goal": "Find the Domino's DoorDash page for Chicago and stop before adding anything or checkout.",
+      "report_hash": "a7e53e29a23a4be0ba40b339672159a3b3ec5039977bf269a8f75c16abd4a532",
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": true,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.google.com/search?q=Domino%27s+DoorDash+Chicago&sca_esv=700c7e79aa3b521d&sxsrf=APpeQnsjBanVvud9cxTQzb9EQzKZXl5OiA%3A1790438296711&source=hp&ei=mOu3avu1KajbruEPgciC6Qc&iflsig=ABILxe8AAAAAarf5qK8QD2mCDX530PzBISK7wNwmnneI&ved=0ahUKEwj74am1zoyXAxWorSsGHQGkIH0Q4dUDCCI&oq=Domino%27s+DoorDash+Chicago&gs_lp=Egdnd3Mtd2l6IhlEb21pbm8ncyBEb29yRGFzaCBDaGljYWdvMgUQIRigATIFECEYoAEyBRAhGKABMgUQIRigATIFECEYoAFI80pQAFgAcAB4AJABAJgBRKABRKoBATG4AQzIAQD4AQGYAgGgAlOYAwCSBwExoAf9A7IHATG4B1PCBwMyLTHIBweACAE&sclient=gws-wiz",
+          "bank_packet_present": true,
+          "candidate_id": "c039",
+          "candidate_id_canonicalized": true,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.doordash.com/en/city/chicago-il/b/domino's-13486/?srsltid=AU7gw4VPyl6dC9tAWjraZoOJtP3oQdP1Lx1xd_dnMKEmAPNX3P2wSF9U",
+          "bank_packet_present": true,
+          "candidate_id": "c154",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        },
+        {
+          "action": "ask",
+          "after_url": "https://www.doordash.com/en/city/chicago-il/b/domino's-13486/?srsltid=AU7gw4VPyl6dC9tAWjraZoOJtP3oQdP1Lx1xd_dnMKEmAPNX3P2wSF9U",
+          "bank_packet_present": false,
+          "candidate_id": "",
+          "candidate_id_canonicalized": false,
+          "execution_status": "ask",
+          "step_index": 3
+        }
+      ],
+      "steps_executed": 3,
+      "stop_reason": "ask",
+      "student_model": "mistral:7b-instruct",
+      "success": true,
+      "teacher_trace_hash": "7c6861a8776d7c2e642fb2412ab879f5d5ab6c67a64369fcf05c206961968016",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.doordash.com/store/domino's-chicago-33936979/64604948/",
+      "goal": "Find the Domino's DoorDash page for Chicago and stop before adding anything or checkout.",
+      "report_hash": "e2779c12cfd8192b8a59c73600f8ebb12069f39a40285d897be570d6314d8526",
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "type",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": true,
+          "candidate_id": "c017",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 0
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.google.com/search?q=Domino%27s+DoorDash+Chicago&sca_esv=700c7e79aa3b521d&sxsrf=APpeQnvKRYZNlbOV2ARRXolg4X4huYNcCg%3A1790438433201&source=hp&ei=Iey3arXGCsq0ptQPqInJwAU&iflsig=ABILxe8AAAAAarf6MYznJdCY9ejCbN7KtrqQl33B6TP-&ved=0ahUKEwj12rT2zoyXAxVKmokEHahEElgQ4dUDCCI&oq=Domino%27s+DoorDash+Chicago&gs_lp=Egdnd3Mtd2l6IhlEb21pbm8ncyBEb29yRGFzaCBDaGljYWdvMgUQIRigATIFECEYoAEyBRAhGKABMgUQIRigATIFECEYoAFIrUtQAFgAcAB4AJABAJgBZKABZKoBAzAuMbgBDMgBAPgBAZgCAaAChQGYAwCSBwMwLjGgB_0DsgcDMC4xuAeFAcIHAzMtMcgHD4AIAQ&sclient=gws-wiz",
+          "bank_packet_present": true,
+          "candidate_id": "c039",
+          "candidate_id_canonicalized": true,
+          "execution_status": "executed",
+          "step_index": 1
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.doordash.com/en/city/chicago-il/b/domino's-13486/?srsltid=AU7gw4X4RQ3zohMHKzUJGRDitCeH86ZfTOmj6BIWL1g3abSDDG2vJ6Vc",
+          "bank_packet_present": true,
+          "candidate_id": "c175",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 2
+        },
+        {
+          "action": "click",
+          "after_url": "https://www.doordash.com/store/domino's-chicago-33936979/64604948/",
+          "bank_packet_present": false,
+          "candidate_id": "c009",
+          "candidate_id_canonicalized": false,
+          "execution_status": "executed",
+          "step_index": 3
+        }
+      ],
+      "steps_executed": 4,
+      "stop_reason": "max_steps",
+      "student_model": "mistral:7b-instruct",
+      "success": true,
+      "teacher_trace_hash": "7c6861a8776d7c2e642fb2412ab879f5d5ab6c67a64369fcf05c206961968016",
+      "unsafe_executions": 0
+    }
+  ],
+  "bank_successes": 3,
+  "generated_ts": 1790439192,
+  "paired_trials": 3,
+  "pairs": [
+    {
+      "bank_report_hash": "f77c2a709e35a30b483057b48892a58438d4cf433f111eafd47cea9e1caed94e",
+      "bank_success": true,
+      "pair_index": 0,
+      "raw_report_hash": "07ac81de2e2cd4687742b991a953d3b8d8f26ca98094bd4e124634d7918d5e7e",
+      "raw_success": false
+    },
+    {
+      "bank_report_hash": "a7e53e29a23a4be0ba40b339672159a3b3ec5039977bf269a8f75c16abd4a532",
+      "bank_success": true,
+      "pair_index": 1,
+      "raw_report_hash": "ca49f43aabaaf75ffcd2752e4a42221ea69201c45e3bcff3d14623cc0fb429f6",
+      "raw_success": false
+    },
+    {
+      "bank_report_hash": "e2779c12cfd8192b8a59c73600f8ebb12069f39a40285d897be570d6314d8526",
+      "bank_success": true,
+      "pair_index": 2,
+      "raw_report_hash": "6d05e9e573495423b3d831979122108ca521702287f6ca9e08aaadf3749d5bba",
+      "raw_success": false
+    }
+  ],
+  "proof_id": "agency_live_teacher_transfer_v0",
+  "raw_reports": [
+    {
+      "final_url": "https://www.google.com/",
+      "goal": "Find the Domino's DoorDash page for Chicago and stop before adding anything or checkout.",
+      "report_hash": "07ac81de2e2cd4687742b991a953d3b8d8f26ca98094bd4e124634d7918d5e7e",
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "ask",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "",
+          "candidate_id_canonicalized": false,
+          "execution_status": "ask",
+          "step_index": 0
+        }
+      ],
+      "steps_executed": 0,
+      "stop_reason": "ask",
+      "student_model": "mistral:7b-instruct",
+      "success": false,
+      "teacher_trace_hash": "",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.google.com/",
+      "goal": "Find the Domino's DoorDash page for Chicago and stop before adding anything or checkout.",
+      "report_hash": "ca49f43aabaaf75ffcd2752e4a42221ea69201c45e3bcff3d14623cc0fb429f6",
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "ask",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "",
+          "candidate_id_canonicalized": false,
+          "execution_status": "ask",
+          "step_index": 0
+        }
+      ],
+      "steps_executed": 0,
+      "stop_reason": "ask",
+      "student_model": "mistral:7b-instruct",
+      "success": false,
+      "teacher_trace_hash": "",
+      "unsafe_executions": 0
+    },
+    {
+      "final_url": "https://www.google.com/",
+      "goal": "Find the Domino's DoorDash page for Chicago and stop before adding anything or checkout.",
+      "report_hash": "6d05e9e573495423b3d831979122108ca521702287f6ca9e08aaadf3749d5bba",
+      "start_url": "https://www.google.com/",
+      "steps": [
+        {
+          "action": "ask",
+          "after_url": "https://www.google.com/",
+          "bank_packet_present": false,
+          "candidate_id": "",
+          "candidate_id_canonicalized": false,
+          "execution_status": "ask",
+          "step_index": 0
+        }
+      ],
+      "steps_executed": 0,
+      "stop_reason": "ask",
+      "student_model": "mistral:7b-instruct",
+      "success": false,
+      "teacher_trace_hash": "",
+      "unsafe_executions": 0
+    }
+  ],
+  "raw_successes": 0,
+  "required_final_url_terms": [
+    "doordash",
+    "domino",
+    "chicago"
+  ],
+  "teacher": {
+    "compiled_rules": [
+      {
+        "action": "type",
+        "page_class": "google_home",
+        "target_href": "",
+        "target_kind": "type",
+        "target_label": "Search",
+        "teacher_reason": "Progress towards finding Domino's DoorDash page for Chicago.",
+        "text": "Domino's DoorDash Chicago",
+        "trace_index": 0
+      },
+      {
+        "action": "click",
+        "page_class": "google_home",
+        "target_href": "",
+        "target_kind": "click",
+        "target_label": "Google Search",
+        "teacher_reason": "Initiate the search for Domino's DoorDash page for Chicago.",
+        "text": "",
+        "trace_index": 1
+      },
+      {
+        "action": "click",
+        "page_class": "google_results",
+        "target_href": "/goto?url=CAEStgEB6zswFQjFcj4oV-g1rVvKAFWY-M-VG40bTyb1NnTv9U1N1cM_l2eRQWQt_jy8BaptghQFaSBED9XnCqqXW3IVVjVLWtlpjyQ2DxDyyC-NPWrkFSXXr9XNnrQExhZf54wQqV9Sx0swNSNIG0jC6CVzDTciS9CLgnuQpH7X_njP4__xKT1vBBEaSL4NNwcBEKiQQQzyNkPJxHz99uIxZP0tV-3RV86nTFrzjuA3HVnp15tfdHE_AA",
+        "target_kind": "click",
+        "target_label": "Domino's Locations in Chicago, IL DoorDash https://www.doordash.com \u203a city \u203a domino's-13486",
+        "teacher_reason": "Selecting a Domino's location to proceed with the order via DoorDash.",
+        "text": "",
+        "trace_index": 2
+      }
+    ],
+    "compiled_successful_steps": 3,
+    "model": "qwen2.5:32b",
+    "report_hash": "7c6861a8776d7c2e642fb2412ab879f5d5ab6c67a64369fcf05c206961968016",
+    "source_report_complete": false,
+    "source_steps_executed": 3,
+    "source_stop_reason": "in_progress"
+  }
+}

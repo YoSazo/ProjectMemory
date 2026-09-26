@@ -164,7 +164,7 @@ from .fortresses.agency_retrieval_fortress import (
     run_retrieval_proof as run_agency_retrieval_proof,
     write_retrieval_artifacts as write_agency_retrieval_artifacts,
 )
-from .fortresses.agency_live_browser import run_live_browser_fortress
+from .fortresses.agency_live_browser import compile_live_teacher_trace, run_live_browser_fortress
 from .fortresses.meta_fortress import GlobalTransmutationLedger
 from .ollama_client import ChatMessage, UniversalLLMClient
 from .terminal_workbench import serve_terminal_workbench
@@ -1262,6 +1262,10 @@ def _handle_agency_retrieval_proof(args: argparse.Namespace) -> int:
 
 def _handle_agency_live_browser(args: argparse.Namespace) -> int:
     client = UniversalLLMClient(provider="ollama", base_url=args.student_base_url)
+    teacher_trace: dict[str, Any] | None = None
+    if args.teacher_trace:
+        teacher_report = json.loads(Path(args.teacher_trace).expanduser().read_text(encoding="utf-8"))
+        teacher_trace = compile_live_teacher_trace(teacher_report)
     report = run_live_browser_fortress(
         goal=args.goal,
         client=client,
@@ -1273,6 +1277,7 @@ def _handle_agency_live_browser(args: argparse.Namespace) -> int:
         allow_caution=args.allow_caution,
         out_dir=args.out_dir,
         start_url=args.start_url,
+        teacher_trace=teacher_trace,
     )
     summary = {
         "student_model": report["student_model"],
@@ -3107,6 +3112,7 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_live.add_argument("--student-num-ctx", type=int, default=4096)
     agency_live.add_argument("--cdp-url", default="http://127.0.0.1:9222")
     agency_live.add_argument("--start-url", default="")
+    agency_live.add_argument("--teacher-trace", default="", help="Compile and retrieve procedural memory from a prior live report.")
     agency_live.add_argument("--max-steps", type=int, default=8)
     agency_live.add_argument("--seed", type=int, default=15000)
     agency_live.add_argument("--allow-caution", action="store_true")
