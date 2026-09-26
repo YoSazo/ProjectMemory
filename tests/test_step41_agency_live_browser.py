@@ -97,6 +97,17 @@ def test_live_decision_verifier_requires_exact_visible_safe_candidate():
     )[0]
 
 
+def test_live_quantity_verifier_only_allows_progress_toward_requested_count():
+    plus = _candidate(2, "Increase quantity by 1")
+    at_one = [plus, _candidate(3, "Current quantity is 1", tag="input")]
+    at_two = [plus, _candidate(3, "Current quantity is 2", tag="input")]
+    decision = {"action": "click", "candidate_id": "c002", "text": "", "reason": "quantity"}
+    assert verify_live_decision(decision, at_one, "set quantity to 2")[0]
+    ok, reason = verify_live_decision(decision, at_two, "set quantity to 2")
+    assert ok is False
+    assert "moves visible quantity 2 away" in reason
+
+
 def test_live_teacher_trace_compiles_and_rebinds_affordance_not_dom_id():
     report = {
         "fortress_id": "live",

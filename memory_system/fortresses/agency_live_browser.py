@@ -40,6 +40,22 @@ def _tokens(value: str) -> set[str]:
     return {token for token in re.findall(r"[a-z0-9]+", str(value).lower()) if len(token) > 1 and token not in ignored}
 
 
+def _quantity_constraint(goal: str, candidates: list[LiveCandidate]) -> tuple[int | None, int | None]:
+    requested_match = re.search(r"\b(?:quantity|qty)\s*(?:to|of|=)?\s*(\d+)\b", goal, flags=re.IGNORECASE)
+    current_match = next(
+        (
+            re.search(r"\bcurrent quantity is\s*(\d+)\b", candidate.label, flags=re.IGNORECASE)
+            for candidate in candidates
+            if "current quantity" in candidate.label.lower()
+        ),
+        None,
+    )
+    return (
+        int(requested_match.group(1)) if requested_match else None,
+        int(current_match.group(1)) if current_match else None,
+    )
+
+
 def classify_candidate_safety(label: str, href: str = "") -> tuple[str, str]:
     text = f"{label} {href}".lower()
     if any(term in text for term in IRREVERSIBLE_TERMS):
@@ -170,6 +186,21 @@ def verify_live_decision(
         return False, f"candidate {candidate.candidate_id} is blocked: {candidate.safety_reason}"
     if candidate.safety == "caution" and not allow_caution:
         return False, f"candidate {candidate.candidate_id} requires caution permission: {candidate.safety_reason}"
+    requested_quantity, current_quantity = _quantity_constraint(goal, candidates)
+    candidate_label = candidate.label.lower()
+    quantity_delta = (
+        1
+        if "increase quantity" in candidate_label
+        else -1
+        if "decrease quantity" in candidate_label
+        else 0
+    )
+    if requested_quantity is not None and current_quantity is not None and quantity_delta:
+        next_quantity = current_quantity + quantity_delta
+        if abs(next_quantity - requested_quantity) >= abs(current_quantity - requested_quantity):
+            return False, (
+                f"quantity action moves visible quantity {current_quantity} away from requested {requested_quantity}"
+            )
     rationale = decision.get("reason", "").lower()
     if action == "click" and any(term in rationale for term in ("search bar", "search field", "type into", "enter text")):
         candidate_text = f"{candidate.label} {candidate.href}".lower()
@@ -223,6 +254,8 @@ def build_live_messages(
         "account creation, payment, purchase, or order submission. Stop before checkout or any transaction boundary. "
         "If needed goal options are not listed and a scrollable region has remaining content, scroll instead of repeating "
         "a click that did not change state. "
+        "When a required-choice dialog exposes a Save control, complete and save that dialog before acting on controls "
+        "outside it. Never type unless a listed candidate is typeable. "
         "For a type action, text must be directly supported by the user's goal. Treat a bank_packet "
         "required_next_action as verified procedural memory and follow it exactly. Return only JSON shaped as "
         '{"action":"click|type|scroll|stop|ask","candidate_id":"c000 or empty","text":"down|up only for scroll","reason":""}.'
@@ -493,11 +526,19 @@ class PlaywrightCDPBridge:
     def observe(self, goal: str, *, limit: int = 36) -> dict[str, Any]:
         self._ensure_page()
         locator = self.page.locator(INTERACTIVE_SELECTOR)
+        dialog_locator = self.page.locator('[role="dialog"],[aria-modal="true"]')
+        has_visible_dialog = any(
+            dialog_locator.nth(index).is_visible() for index in range(min(dialog_locator.count(), 20))
+        )
         candidates: list[LiveCandidate] = []
         for dom_index in range(min(locator.count(), 500)):
             element = locator.nth(dom_index)
             try:
                 if not element.is_visible():
+                    continue
+                if has_visible_dialog and not bool(
+                    element.evaluate("element => Boolean(element.closest('[role=dialog],[aria-modal=true]'))")
+                ):
                     continue
                 tag = str(element.evaluate("element => element.tagName.toLowerCase()"))
                 label = " ".join(
@@ -1131,6 +1172,7 @@ def build_live_trace_completion_proof(
     raw_report: dict[str, Any],
     bank_report: dict[str, Any],
     required_selected_terms: list[str] | None = None,
+    required_visible_quantity: int | None = None,
 ) -> dict[str, Any]:
     trace = compile_live_teacher_trace(teacher_report)
     rules = list(trace.get("rules") or [])
@@ -1142,6 +1184,7 @@ def build_live_trace_completion_proof(
         packet_matches: list[bool] = []
         selected_labels: list[str] = []
         transaction_progression_executions = 0
+        visible_quantities: list[int] = []
         for index, rule in enumerate(rules):
             row = dict(rows[index]) if index < len(rows) else {}
             decision = dict(row.get("decision") or {})
@@ -1180,6 +1223,10 @@ def build_live_trace_completion_proof(
                 }
             )
         for row in rows:
+            for candidate in list(dict(row.get("before") or {}).get("candidates") or []):
+                match = re.search(r"\bcurrent quantity is\s*(\d+)\b", str(candidate.get("label") or ""), re.I)
+                if match:
+                    visible_quantities.append(int(match.group(1)))
             if not dict(row.get("execution") or {}).get("executed"):
                 continue
             decision = dict(row.get("decision") or {})
@@ -1204,6 +1251,11 @@ def build_live_trace_completion_proof(
             "selected_term_evidence_complete": all(
                 term.lower() in " ".join(selected_labels).lower() for term in (required_selected_terms or [])
             ),
+            "required_visible_quantity": required_visible_quantity,
+            "visible_quantities": visible_quantities,
+            "quantity_evidence_complete": (
+                required_visible_quantity is None or required_visible_quantity in visible_quantities
+            ),
             "terminal_rule_followed": bool(rules) and rules[-1].get("action") in {"stop", "ask"} and bool(matches[-1]),
             "transaction_progression_executions": transaction_progression_executions,
             "sequence": sequence,
@@ -1215,6 +1267,8 @@ def build_live_trace_completion_proof(
         "proof_id": (
             "agency_live_teacher_item_mutation_v0"
             if required_selected_terms
+            else "agency_live_teacher_quantity_sequence_v0"
+            if required_visible_quantity is not None
             else "agency_live_teacher_item_sequence_v0"
         ),
         "generated_ts": int(time.time()),
@@ -1248,14 +1302,20 @@ def write_live_trace_completion_proof(report: dict[str, Any], out_dir: str | Pat
     bank = dict(report.get("bank") or {})
     authenticity = dict(report.get("authenticity") or {})
     adapted = bool(bank.get("required_selected_terms"))
+    quantity_proof = bank.get("required_visible_quantity") is not None
     lines = [
-        "# Agency Live Item-Mutation Proof" if adapted else "# Agency Live Item-Sequence Proof",
+        "# Agency Live Item-Mutation Proof"
+        if adapted
+        else "# Agency Live Quantity-Sequence Proof"
+        if quantity_proof
+        else "# Agency Live Item-Sequence Proof",
         "",
         f"- Teacher: `{dict(report.get('teacher') or {}).get('model', '')}`",
         f"- Raw trace complete: `{raw.get('trace_complete', False)}`",
         f"- Bank trace complete: `{bank.get('trace_complete', False)}`",
         f"- Bank adapted packet sequence complete: `{bank.get('adapted_packet_sequence_complete', False)}`",
         f"- Required selected-term evidence complete: `{bank.get('selected_term_evidence_complete', False)}`",
+        f"- Required quantity evidence complete: `{bank.get('quantity_evidence_complete', False)}`",
         f"- Bank terminal stop followed: `{bank.get('terminal_rule_followed', False)}`",
         f"- Teacher calls in student runs: `{authenticity.get('teacher_calls_in_student_runs', 0)}`",
         f"- Transaction progression actions executed: `{raw.get('transaction_progression_executions', 0) + bank.get('transaction_progression_executions', 0)}`",
@@ -1264,6 +1324,9 @@ def write_live_trace_completion_proof(report: dict[str, Any], out_dir: str | Pat
             "The frozen cheese-pizza teacher sequence rebinds its item and size slots to the mutated goal, then stops before cart. "
             "This is one live cross-item mutation and is not yet a broad item-family claim."
             if adapted
+            else "The frozen teacher sequence grounds the item, visible quantity transition, required modifier dialog, and terminal boundary. "
+            "This is one live quantity task and is not yet a broad quantity-transfer claim."
+            if quantity_proof
             else "The frozen teacher sequence opens the store, opens the target item, selects the large size, and stops before cart. "
             "This is one live item task and is not yet a cross-item transfer claim."
         ),
