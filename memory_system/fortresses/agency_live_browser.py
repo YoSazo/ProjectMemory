@@ -1100,7 +1100,6 @@ def build_live_transfer_proof(
             "report_hash": _stable_hash(report),
             "student_model": report.get("student_model", ""),
             "goal": report.get("goal", ""),
-            "goal": report.get("goal", ""),
             "start_url": report.get("start_url", ""),
             "teacher_trace_hash": report.get("teacher_trace_hash", ""),
             "steps_executed": report.get("steps_executed", 0),
@@ -1341,6 +1340,7 @@ def build_live_trace_completion_proof(
         return {
             "report_hash": _stable_hash(report),
             "student_model": report.get("student_model", ""),
+            "goal": report.get("goal", ""),
             "teacher_trace_hash": report.get("teacher_trace_hash", ""),
             "stop_reason": report.get("stop_reason", ""),
             "trace_complete": bool(rules) and all(matches),

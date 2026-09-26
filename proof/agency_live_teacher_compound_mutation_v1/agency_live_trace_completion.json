@@ -7,19 +7,21 @@
   },
   "bank": {
     "adapted_packet_sequence_complete": true,
-    "goal": "On DoorDash, find a cheese pizza from Pizza Hut in Dallas, Texas, select large with hand-tossed crust, set quantity to 3, and stop before adding it to the cart or checkout.",
+    "goal": "On DoorDash, find a pepperoni pizza from Pizza Hut in Dallas, Texas, select large with hand-tossed crust, set quantity to 3, and stop before adding it to the cart or checkout.",
     "quantity_evidence_complete": true,
-    "report_hash": "060be2ed227c1c23b008f4d02b783545d28762bb8a81ee94b5c7d5c680e7cfec",
-    "required_selected_terms": [],
+    "report_hash": "36771c8ff16d15aa7b6046d653394f9e918f43e8cacf8fe95ad4685e09032ba3",
+    "required_selected_terms": [
+      "pepperoni"
+    ],
     "required_visible_quantity": 3,
     "selected_term_evidence_complete": true,
     "sequence": [
       {
         "actual_action": "click",
-        "actual_label": "Cheese Pizza $13.91",
+        "actual_label": "Pepperoni Lover's\u00ae Pizza $22.19 \u2022 90% (11)",
         "expected_action": "click",
         "expected_label": "Cheese Pizza $13.91",
-        "matched": true,
+        "matched": false,
         "trace_index": 0
       },
       {
@@ -77,15 +79,17 @@
     ]
   },
   "generated_ts": 1790451969,
-  "proof_id": "agency_live_teacher_quantity_sequence_v0",
+  "proof_id": "agency_live_teacher_item_mutation_v0",
   "raw": {
     "adapted_packet_sequence_complete": false,
-    "goal": "On DoorDash, find a cheese pizza from Pizza Hut in Dallas, Texas, select large with hand-tossed crust, set quantity to 3, and stop before adding it to the cart or checkout.",
+    "goal": "On DoorDash, find a pepperoni pizza from Pizza Hut in Dallas, Texas, select large with hand-tossed crust, set quantity to 3, and stop before adding it to the cart or checkout.",
     "quantity_evidence_complete": false,
-    "report_hash": "121ed050be9afe43d08e839f753df1e9aef69e41e0c40df88a30c8a27dd51fe3",
-    "required_selected_terms": [],
+    "report_hash": "fb79f179865915f356e39031431a3b0a26e261ced7d1c5615c3011ca1b180f46",
+    "required_selected_terms": [
+      "pepperoni"
+    ],
     "required_visible_quantity": 3,
-    "selected_term_evidence_complete": true,
+    "selected_term_evidence_complete": false,
     "sequence": [
       {
         "actual_action": "scroll",
