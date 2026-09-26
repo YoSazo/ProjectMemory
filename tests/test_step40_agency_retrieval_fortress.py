@@ -8,7 +8,9 @@ from memory_system.fortresses.agency_retrieval_fortress import (
     LANE_RETRIEVED,
     LANE_RETRIEVED_COUNTERFACTUAL,
     LANE_WRONG_RETRIEVAL,
+    _verify_action_contract,
     build_retrieval_messages,
+    cross_app_transfer_cases,
     opaque_rule_catalog,
     retrieve_rule,
     run_retrieval_proof,
@@ -138,6 +140,23 @@ def test_teacher_predicate_verifier_repairs_inapplicable_model_proposal():
     assert result["model_proposal_correct"] is False
     assert result["correct"] is True
     assert result["selection_mode"] == "teacher_predicate_repair"
+
+
+def test_food_teacher_predicates_cover_cross_app_cases_without_new_labels():
+    cases = cross_app_transfer_cases()
+    assert {case.family for case in cases} == {FAMILY_ALIAS, FAMILY_BOUNDARY}
+    for case in cases:
+        verification = verify_catalog_applicability(case=case, teacher=_teacher())
+        assert len(verification["compatible_rule_keys"]) == 1
+
+
+def test_contract_verifier_rejects_visible_but_ungrounded_distractor():
+    case = next(case for case in cross_app_transfer_cases() if case.case_id == "cross_shop_usb_cable_alias")
+    packet = [{"required_next_action": {"action_type": "tap", "target_selector": "Increase quantity for intent.item"}}]
+    action = {"decision": {"action_type": "tap", "target_id": "case-plus"}}
+    passed, feedback = _verify_action_contract(action, packet, case)
+    assert passed is False
+    assert "no item grounding overlap" in feedback
 
 
 def test_model_retrieval_routes_rules_without_family_oracle():

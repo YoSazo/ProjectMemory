@@ -597,7 +597,7 @@ def build_student_messages(
 ) -> list[ChatMessage]:
     state = {**case.model_state(), "bank_packet": bank_packet}
     system = (
-        "You are a frozen local policy controlling a food-ordering interface. Choose exactly one visible candidate "
+        "You are a frozen local policy controlling a transactional interface. Choose exactly one visible candidate "
         "or stop when no candidate can preserve every unresolved constraint. Never assume that Add to cart changes "
         "quantity. Treat applicable bank_packet entries as verified procedural memory. When one supplies "
         "required_next_action, follow that contract exactly; for stop, use an empty target_id. Return only JSON shaped as "

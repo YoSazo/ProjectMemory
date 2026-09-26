@@ -160,6 +160,7 @@ from .fortresses.agency_transfer_fortress import (
 )
 from .fortresses.agency_retrieval_fortress import (
     RETRIEVAL_LANES as AGENCY_RETRIEVAL_LANES,
+    cross_app_transfer_cases,
     run_retrieval_proof as run_agency_retrieval_proof,
     write_retrieval_artifacts as write_agency_retrieval_artifacts,
 )
@@ -1221,10 +1222,12 @@ def _handle_agency_retrieval_proof(args: argparse.Namespace) -> int:
         teacher=teacher,
         student_client=student_client,
         student_model=args.student_model,
+        cases=cross_app_transfer_cases() if args.case_pack == "cross-app" else None,
         trials=args.trials,
         seed_base=args.seed_base,
         num_ctx=args.student_num_ctx,
         lanes=tuple(args.lane or AGENCY_RETRIEVAL_LANES),
+        case_pack=args.case_pack,
     )
     artifacts = write_agency_retrieval_artifacts(report=report, out_dir=args.out_dir)
     if args.proof_dir:
@@ -3053,6 +3056,7 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_retrieval.add_argument("--student-model", default="mistral:7b-instruct")
     agency_retrieval.add_argument("--student-base-url", default=os.environ.get("MEMLA_STUDENT_BASE_URL", "http://127.0.0.1:11434"))
     agency_retrieval.add_argument("--student-num-ctx", type=int, default=4096)
+    agency_retrieval.add_argument("--case-pack", choices=("doordash", "cross-app"), default="doordash")
     agency_retrieval.add_argument("--trials", type=int, default=3)
     agency_retrieval.add_argument("--seed-base", type=int, default=13000)
     agency_retrieval.add_argument(
