@@ -56,6 +56,138 @@ def _quantity_constraint(goal: str, candidates: list[LiveCandidate]) -> tuple[in
     )
 
 
+def _required_choices_remaining(candidates: list[LiveCandidate], visible_text: str = "") -> int:
+    for candidate in candidates:
+        match = re.search(r"\bmake\s+(\d+)\s+required selections?\b", candidate.label, re.I)
+        if match:
+            return int(match.group(1))
+    match = re.search(r"\bmake\s+(\d+)\s+required selections?\b", visible_text, re.I)
+    return int(match.group(1)) if match else 0
+
+
+def _choice_label(label: str) -> str:
+    clean = re.sub(r"\b\d+\s*cal\b|\+\$\d+(?:\.\d+)?", "", label, flags=re.I)
+    return " ".join(re.findall(r"[a-z0-9]+", clean.lower()))
+
+
+def _choice_options(candidates: list[LiveCandidate]) -> list[str]:
+    labels: dict[str, tuple[str, int]] = {}
+    for candidate in candidates:
+        label = candidate.label.strip()
+        if candidate.kind != "click" or candidate.safety != "safe" or not label:
+            continue
+        if re.search(r"^(?:#\d+|close\b|next\b|previous\b|make\b|add\b|increase\b|decrease\b)", label, re.I):
+            continue
+        normalized = _choice_label(label)
+        if normalized:
+            original, count = labels.get(normalized, (label, 0))
+            labels[normalized] = original, count + 1
+    return [label for label, count in labels.values() if count > 1]
+
+
+def _answer_choices(answer: str, options: list[str], count: int) -> list[str]:
+    normalized_answer = f" {_choice_label(answer)} "
+    aliases: dict[str, list[str]] = {}
+    for option in options:
+        words = _choice_label(option).split()
+        aliases[option] = [" ".join(words[:length]) for length in range(1, len(words) + 1)]
+    matches: list[tuple[int, str]] = []
+    for option, names in aliases.items():
+        valid = [name for name in names if len(name) >= 3 and f" {name} " in normalized_answer
+                 and sum(name in other_names for other_names in aliases.values()) == 1]
+        if valid:
+            best = max(valid, key=len)
+            matches.append((normalized_answer.find(f" {best} "), option))
+    matches.sort(key=lambda item: item[0])
+    choices = [option for _, option in matches]
+    if len(choices) == 1 and count == 2 and re.search(r"\b(?:twice|both|two of the same)\b", answer, re.I):
+        choices *= 2
+    return choices[:count] if len(choices) == count else []
+
+
+def _choice_candidate(candidates: list[LiveCandidate], label: str, ordinal: int) -> LiveCandidate | None:
+    ordered = sorted(candidates, key=lambda candidate: candidate.dom_index)
+    option_labels = {_choice_label(option) for option in _choice_options(candidates)}
+    first_positions: dict[str, int] = {}
+    repeated_positions: list[int] = []
+    for candidate in ordered:
+        normalized = _choice_label(candidate.label)
+        if normalized not in option_labels:
+            continue
+        if normalized in first_positions:
+            repeated_positions.append(candidate.dom_index)
+        else:
+            first_positions[normalized] = candidate.dom_index
+    second_group_start = min(repeated_positions) if repeated_positions else None
+    matches = [
+        candidate for candidate in ordered
+        if candidate.kind == "click" and candidate.safety == "safe"
+        and _choice_label(candidate.label) == _choice_label(label)
+    ]
+    if second_group_start is not None and ordinal < 2:
+        group_matches = [
+            candidate for candidate in matches
+            if (candidate.dom_index >= second_group_start) == (ordinal == 1)
+        ]
+        return group_matches[0] if group_matches else None
+    return matches[ordinal] if ordinal < len(matches) else None
+
+
+def live_goal_state(goal: str, observation: dict[str, Any], history: list[dict[str, Any]]) -> dict[str, Any]:
+    candidates = list(observation.get("candidates") or [])
+    requested_quantity, current_quantity = _quantity_constraint(goal, candidates)
+    required_remaining = _required_choices_remaining(candidates, str(observation.get("visible_text") or ""))
+    confirmed_choices = sum(
+        max(0, int(dict(row.get("goal_state_before") or {}).get("required_choices_remaining") or 0)
+            - int(dict(row.get("goal_state_after") or {}).get("required_choices_remaining") or 0)) for row in history
+        if dict(row.get("execution") or {}).get("executed")
+    )
+    verified_quantity = next(
+        (dict(row.get("goal_state_after") or {}).get("visible_quantity") for row in reversed(history)
+         if dict(row.get("execution") or {}).get("executed")
+         and dict(row.get("goal_state_after") or {}).get("visible_quantity") == requested_quantity),
+        None,
+    )
+    return {
+        "requested_quantity": requested_quantity,
+        "visible_quantity": current_quantity,
+        "verified_quantity": verified_quantity,
+        "required_choices_remaining": required_remaining,
+        "confirmed_choices": confirmed_choices,
+        "choice_options": _choice_options(candidates) if required_remaining else [],
+        "dialog_title": str(observation.get("dialog_title") or ""),
+        "state_hash": str(observation.get("state_hash") or ""),
+    }
+
+
+def required_choice_packet(
+    state: dict[str, Any], candidates: list[LiveCandidate], choices: list[str]
+) -> list[dict[str, Any]]:
+    remaining = int(state["required_choices_remaining"])
+    if not remaining:
+        return []
+    options = list(state["choice_options"])
+    confirmed = int(state["confirmed_choices"])
+    if remaining + confirmed != 2 or not choices or confirmed >= len(choices):
+        if remaining == 2 and len(options) >= 2:
+            question = f"This item needs {remaining} required choices. Which would you like? Options: {', '.join(options)}"
+        else:
+            question = (f"This item needs {remaining} required choices, but I cannot reliably identify all options. "
+                        "Please make the choices in DoorDash, then resume.")
+        action = {"action": "ask", "candidate_id": "", "text": question}
+        mode = "required_choice_clarification"
+    else:
+        candidate = _choice_candidate(candidates, choices[confirmed], confirmed)
+        if candidate is None:
+            question = f"I cannot locate the required choice {choices[confirmed]!r}. Please clarify your selection."
+            action = {"action": "ask", "candidate_id": "", "text": question}
+            mode = "required_choice_unavailable"
+        else:
+            action = {"action": "click", "candidate_id": candidate.candidate_id, "text": ""}
+            mode = "state_conditioned_required_choice"
+    return [{"binding_mode": mode, "provenance": "observed_state_guard", "required_next_action": action}]
+
+
 def classify_candidate_safety(label: str, href: str = "") -> tuple[str, str]:
     text = f"{label} {href}".lower()
     if any(term in text for term in IRREVERSIBLE_TERMS):
@@ -157,8 +289,10 @@ def verify_live_decision(
     *,
     allow_caution: bool = False,
     bank_packet: list[dict[str, Any]] | None = None,
+    goal_state: dict[str, Any] | None = None,
 ) -> tuple[bool, str]:
     action = decision["action"]
+    state = dict(goal_state or {})
     packet = list(bank_packet or [])
     if packet:
         required = dict(packet[0].get("required_next_action") or {})
@@ -169,6 +303,12 @@ def verify_live_decision(
         expected_text = str(required.get("text") or "")
         if expected_text and str(decision.get("text") or "") != expected_text:
             return False, f"verified procedural memory requires text={expected_text!r}"
+    if action == "stop" and int(state.get("required_choices_remaining") or 0) > 0:
+        return False, "required choices remain unresolved; ask for the missing preferences"
+    if action == "stop" and state.get("requested_quantity") is not None:
+        visible = state.get("visible_quantity")
+        if visible != state["requested_quantity"] and state.get("verified_quantity") != state["requested_quantity"]:
+            return False, "requested quantity has not been visibly verified"
     if action in {"stop", "ask"}:
         return True, ""
     if action == "scroll":
@@ -300,6 +440,7 @@ def build_live_messages(
     history: list[dict[str, Any]],
     scrollable_regions: list[dict[str, Any]],
     bank_packet: list[dict[str, Any]] | None = None,
+    goal_state: dict[str, Any] | None = None,
 ) -> list[ChatMessage]:
     system = (
         "OUTPUT ONE JSON OBJECT AND NOTHING ELSE. You control a real browser through a bounded observe-act-reobserve "
@@ -331,6 +472,7 @@ def build_live_messages(
             for row in history[-4:]
         ],
         "bank_packet": list(bank_packet or []),
+        "goal_state": dict(goal_state or {}),
     }
     return [
         ChatMessage(role="system", content=system),
@@ -772,6 +914,15 @@ class PlaywrightCDPBridge:
         has_visible_dialog = any(
             dialog_locator.nth(index).is_visible() for index in range(min(dialog_locator.count(), 20))
         )
+        dialog_title = ""
+        if has_visible_dialog:
+            for index in range(min(dialog_locator.count(), 20)):
+                dialog = dialog_locator.nth(index)
+                if dialog.is_visible():
+                    heading = dialog.locator("h1,h2,h3,[role=heading]").first
+                    if heading.count():
+                        dialog_title = " ".join(heading.inner_text(timeout=500).split())[:240]
+                    break
         candidates: list[LiveCandidate] = []
         for dom_index in range(min(locator.count(), 500)):
             element = locator.nth(dom_index)
@@ -839,6 +990,7 @@ class PlaywrightCDPBridge:
         return {
             "url": self.page.url,
             "title": self.page.title(),
+            "dialog_title": dialog_title,
             "visible_text": body_text,
             "candidates": ranked,
             "all_candidate_count": len(candidates),
@@ -847,6 +999,7 @@ class PlaywrightCDPBridge:
                 {
                     "url": self.page.url,
                     "title": self.page.title(),
+                    "dialog_title": dialog_title,
                     "text": body_text[:5000],
                     "candidates": [asdict(c) for c in ranked],
                     "scrollable_regions": scrollable_regions,
@@ -970,13 +1123,27 @@ def run_live_browser_fortress(
     out_dir: str | Path = "memla_reports/agency_live_browser",
     start_url: str = "",
     teacher_trace: dict[str, Any] | None = None,
+    resume_report: dict[str, Any] | None = None,
+    clarification_answer: str = "",
 ) -> dict[str, Any]:
     root = Path(out_dir).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     json_path = root / "agency_live_browser_report.json"
     bridge = PlaywrightCDPBridge(cdp_url)
-    rows: list[dict[str, Any]] = []
+    rows: list[dict[str, Any]] = list((resume_report or {}).get("rows") or [])
+    clarification = dict((resume_report or {}).get("clarification") or {})
     stop_reason = "max_steps"
+
+    if resume_report:
+        if (resume_report.get("goal") != goal or resume_report.get("student_model") != model
+                or resume_report.get("teacher_trace_hash", "") != str((teacher_trace or {}).get("source_report_hash") or "")):
+            raise ValueError("Resume goal, student model, or teacher trace differs from the saved run")
+        if (resume_report.get("stop_reason") != "clarification_required" or not rows
+                or dict(rows[-1].get("decision") or {}).get("action") != "ask"
+                or int(dict(rows[-1].get("goal_state_before") or {}).get("required_choices_remaining") or 0) == 0):
+            raise ValueError("Only a paused clarification run can be resumed")
+        if start_url:
+            raise ValueError("Resume requires the existing browser state; do not supply start_url")
 
     def checkpoint(current_stop_reason: str) -> dict[str, Any]:
         payload = {
@@ -990,6 +1157,8 @@ def run_live_browser_fortress(
             "allow_caution": allow_caution,
             "teacher_calls": 0,
             "teacher_trace_hash": str((teacher_trace or {}).get("source_report_hash") or ""),
+            "compiled_teacher_trace": teacher_trace,
+            "clarification": clarification,
             "stop_reason": current_stop_reason,
             "steps_executed": sum(1 for row in rows if row["execution"]["executed"]),
             "rows": rows,
@@ -1001,11 +1170,30 @@ def run_live_browser_fortress(
         if start_url:
             bridge.page.goto(start_url, wait_until="domcontentloaded", timeout=30000)
             bridge.page.wait_for_timeout(1000)
-        for step_index in range(max(1, int(max_steps))):
+        if resume_report:
+            resumed = bridge.observe(goal)
+            paused_after = dict(rows[-1].get("after") or {})
+            if (resumed["url"] != paused_after.get("url")
+                    or resumed.get("dialog_title", "") != paused_after.get("dialog_title", "")):
+                raise ValueError("Browser no longer shows the paused product dialog")
+            if _required_choices_remaining(resumed["candidates"], str(resumed.get("visible_text") or "")) == 0:
+                clarification = {"choice_method": "manual_ui", "choices": []}
+        if clarification_answer and not (resume_report and clarification.get("choice_method") == "manual_ui"):
+            initial = bridge.observe(goal)
+            initial_state = live_goal_state(goal, initial, rows)
+            expected_count = initial_state["required_choices_remaining"] + initial_state["confirmed_choices"]
+            parsed_choices = _answer_choices(clarification_answer, initial_state["choice_options"], expected_count)
+            if not parsed_choices:
+                raise ValueError("Clarification must name each required option as shown in the dialog")
+            clarification = {"answer_hash": _stable_hash(clarification_answer), "choices": parsed_choices}
+        for step_index in range(len(rows), len(rows) + max(1, int(max_steps))):
             observation = bridge.observe(goal)
+            goal_state = live_goal_state(goal, observation, rows)
             screenshot_path = root / f"step_{step_index:02d}_before.png"
             bridge.screenshot(screenshot_path)
-            bank_packet = (
+            bank_packet = required_choice_packet(
+                goal_state, observation["candidates"], list(clarification.get("choices") or [])
+            ) or (
                 retrieve_live_teacher_packet(
                     compiled_trace=teacher_trace,
                     observation=observation,
@@ -1024,6 +1212,7 @@ def run_live_browser_fortress(
                 history=rows,
                 scrollable_regions=observation["scrollable_regions"],
                 bank_packet=bank_packet,
+                goal_state=goal_state,
             )
             started = time.time()
             try:
@@ -1119,6 +1308,7 @@ def run_live_browser_fortress(
                     goal,
                     allow_caution=allow_caution,
                     bank_packet=bank_packet,
+                    goal_state=goal_state,
                 )
             while decision is not None and not decision_ok and action_repair_count < 2:
                 action_repair_count += 1
@@ -1173,6 +1363,7 @@ def run_live_browser_fortress(
                     goal,
                     allow_caution=allow_caution,
                     bank_packet=bank_packet,
+                    goal_state=goal_state,
                 )
             if decision is None:
                 execution = {"status": "blocked", "executed": False, "reason": parse_mode}
@@ -1184,7 +1375,9 @@ def run_live_browser_fortress(
                 execution = bridge.execute(decision, observation, allow_caution=allow_caution)
             try:
                 after = bridge.observe(goal)
-                after_summary = {"url": after["url"], "title": after["title"], "state_hash": after["state_hash"]}
+                after_state = live_goal_state(goal, after, rows)
+                after_summary = {"url": after["url"], "title": after["title"],
+                                 "dialog_title": after.get("dialog_title", ""), "state_hash": after["state_hash"]}
             except Exception as exc:
                 after_summary = {
                     "url": observation["url"],
@@ -1192,6 +1385,7 @@ def run_live_browser_fortress(
                     "state_hash": observation["state_hash"],
                     "observation_error": str(exc)[:500],
                 }
+                after_state = goal_state
                 if execution["executed"]:
                     execution = {
                         **execution,
@@ -1215,6 +1409,8 @@ def run_live_browser_fortress(
                 "action_repair_count": action_repair_count,
                 "candidate_id_canonicalized": candidate_id_canonicalized,
                 "bank_packet": bank_packet,
+                "goal_state_before": goal_state,
+                "goal_state_after": after_state,
                 "student_response": response_text,
                 "student_response_hash": _stable_hash(response_text),
                 "execution": execution,
@@ -1222,9 +1418,14 @@ def run_live_browser_fortress(
                 "latency_ms": int((time.time() - started) * 1000),
             }
             rows.append(row)
+            if (execution["executed"] and goal_state["required_choices_remaining"] > 0
+                    and bank_packet and bank_packet[0].get("binding_mode") == "state_conditioned_required_choice"
+                    and after_state["required_choices_remaining"] >= goal_state["required_choices_remaining"]):
+                execution.update(status="blocked", executed=False, reason="required_choice_not_visibly_confirmed")
+                stop_reason = execution["reason"]
             checkpoint(stop_reason if not execution["executed"] else "in_progress")
             if decision is None or decision["action"] in {"stop", "ask"} or not execution["executed"]:
-                stop_reason = execution["reason"] or execution["status"]
+                stop_reason = "clarification_required" if decision and decision["action"] == "ask" else execution["reason"] or execution["status"]
                 break
     finally:
         bridge.close()

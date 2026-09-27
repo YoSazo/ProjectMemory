@@ -1262,6 +1262,16 @@ def _handle_agency_retrieval_proof(args: argparse.Namespace) -> int:
 
 def _handle_agency_live_browser(args: argparse.Namespace) -> int:
     client = UniversalLLMClient(provider="ollama", base_url=args.student_base_url)
+    resume_report = (
+        json.loads(Path(args.resume_report).expanduser().read_text(encoding="utf-8"))
+        if args.resume_report else None
+    )
+    goal = args.goal or str((resume_report or {}).get("goal") or "")
+    if not goal:
+        raise ValueError("--goal is required unless --resume-report supplies it")
+    student_model = args.student_model or str((resume_report or {}).get("student_model") or "mistral:7b-instruct")
+    out_dir = args.out_dir or (str(Path(args.resume_report).expanduser().parent) if args.resume_report
+                               else "memla_reports/agency_live_browser")
     teacher_trace: dict[str, Any] | None = None
     if args.teacher_trace:
         teacher_reports = [
@@ -1270,20 +1280,24 @@ def _handle_agency_live_browser(args: argparse.Namespace) -> int:
         teacher_trace = (
             compile_live_teacher_trace(teacher_reports[0])
             if len(teacher_reports) == 1
-            else compile_live_teacher_bank(teacher_reports, goal=args.goal)
+            else compile_live_teacher_bank(teacher_reports, goal=goal)
         )
+    elif resume_report:
+        teacher_trace = resume_report.get("compiled_teacher_trace")
     report = run_live_browser_fortress(
-        goal=args.goal,
+        goal=goal,
         client=client,
-        model=args.student_model,
+        model=student_model,
         cdp_url=args.cdp_url,
         max_steps=args.max_steps,
         seed=args.seed,
         num_ctx=args.student_num_ctx,
         allow_caution=args.allow_caution,
-        out_dir=args.out_dir,
+        out_dir=out_dir,
         start_url=args.start_url,
         teacher_trace=teacher_trace,
+        resume_report=resume_report,
+        clarification_answer=args.clarification_answer,
     )
     summary = {
         "student_model": report["student_model"],
@@ -1292,6 +1306,8 @@ def _handle_agency_live_browser(args: argparse.Namespace) -> int:
         "stop_reason": report["stop_reason"],
         "report_json": report["report_json"],
         "final_url": report["rows"][-1]["after"]["url"] if report["rows"] else "",
+        "question": str(dict(report["rows"][-1].get("decision") or {}).get("text") or "")
+        if report["stop_reason"] == "clarification_required" else "",
     }
     _print_json(summary)
     return 0
@@ -3112,12 +3128,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "live-browser",
         help="Run a bounded student policy against a real browser through Chrome DevTools.",
     )
-    agency_live.add_argument("--goal", required=True)
-    agency_live.add_argument("--student-model", default="mistral:7b-instruct")
+    agency_live.add_argument("--goal", default="")
+    agency_live.add_argument("--student-model", default="")
     agency_live.add_argument("--student-base-url", default=os.environ.get("MEMLA_STUDENT_BASE_URL", "http://127.0.0.1:11434"))
     agency_live.add_argument("--student-num-ctx", type=int, default=4096)
     agency_live.add_argument("--cdp-url", default="http://127.0.0.1:9222")
     agency_live.add_argument("--start-url", default="")
+    agency_live.add_argument("--resume-report", default="", help="Resume a paused required-choice run using its JSON report.")
+    agency_live.add_argument("--clarification-answer", default="", help="Answer the pending required-choice question.")
     agency_live.add_argument(
         "--teacher-trace",
         action="append",
@@ -3127,7 +3145,7 @@ def _build_parser() -> argparse.ArgumentParser:
     agency_live.add_argument("--max-steps", type=int, default=8)
     agency_live.add_argument("--seed", type=int, default=15000)
     agency_live.add_argument("--allow-caution", action="store_true")
-    agency_live.add_argument("--out-dir", default="memla_reports/agency_live_browser")
+    agency_live.add_argument("--out-dir", default="")
     agency_live.set_defaults(func=_handle_agency_live_browser)
 
     research_parser = subparsers.add_parser("research", help="Run bounded deep-research loop capture and benchmarks.")

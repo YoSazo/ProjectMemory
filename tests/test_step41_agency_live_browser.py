@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
+import memory_system.fortresses.agency_live_browser as live_browser
 from memory_system.fortresses.agency_live_browser import (
     LiveCandidate,
     build_live_transfer_proof,
@@ -11,6 +15,9 @@ from memory_system.fortresses.agency_live_browser import (
     parse_live_decision,
     rank_candidates,
     retrieve_live_teacher_packet,
+    live_goal_state,
+    required_choice_packet,
+    _answer_choices,
     verify_live_decision,
 )
 
@@ -96,6 +103,120 @@ def test_live_decision_verifier_requires_exact_visible_safe_candidate():
         candidates,
         "Chicago",
     )[0]
+
+
+def test_required_choice_question_and_two_group_resolution():
+    candidates = [
+        _candidate(10, "Make 2 required selections", tag="button"),
+        _candidate(11, "Tangy BBQ Dipping Sauce 45 cal", tag="button"),
+        _candidate(12, "Sweet and Sour Dipping Sauce 50 cal", tag="button"),
+        _candidate(21, "Tangy BBQ Dipping Sauce 45 cal", tag="button"),
+        _candidate(22, "Sweet and Sour Dipping Sauce 50 cal", tag="button"),
+    ]
+    observation = {"candidates": candidates, "dialog_title": "10 pc. Chicken McNuggets", "state_hash": "abc"}
+    state = live_goal_state("Get Nuggets quantity 2", observation, [])
+    assert state["required_choices_remaining"] == 2
+    assert state["visible_quantity"] is None
+    assert live_goal_state("quantity 2", {"candidates": [], "visible_text": "Make 2 required selections"}, [])[
+        "required_choices_remaining"
+    ] == 2
+    question = required_choice_packet(state, candidates, [])
+    assert question[0]["required_next_action"]["action"] == "ask"
+    assert "Tangy BBQ" in question[0]["required_next_action"]["text"]
+    choices = _answer_choices("Tangy BBQ and Sweet and Sour", state["choice_options"], 2)
+    assert len(choices) == 2
+    first = required_choice_packet(state, candidates, choices)
+    assert first[0]["required_next_action"]["candidate_id"] == "c011"
+    state["confirmed_choices"] = 1
+    state["required_choices_remaining"] = 1
+    second = required_choice_packet(state, candidates, choices)
+    assert second[0]["required_next_action"]["candidate_id"] == "c022"
+    assert not _answer_choices("whatever", state["choice_options"], 2)
+    assert _answer_choices("BBQ twice", ["BBQ"], 2) == ["BBQ", "BBQ"]
+
+
+def test_unresolved_required_choices_and_quantity_cannot_stop():
+    stop = {"action": "stop", "candidate_id": "", "text": "", "reason": "done"}
+    state = {"required_choices_remaining": 1, "requested_quantity": 2, "visible_quantity": None}
+    assert not verify_live_decision(stop, [], "quantity 2", goal_state=state)[0]
+    state["required_choices_remaining"] = 0
+    assert not verify_live_decision(stop, [], "quantity 2", goal_state=state)[0]
+    state["verified_quantity"] = 2
+    assert verify_live_decision(stop, [], "quantity 2", goal_state=state)[0]
+
+
+def test_required_choice_run_pauses_resumes_and_verifies(monkeypatch, tmp_path):
+    class Bridge:
+        remaining = 2
+        quantity = 1
+
+        def __init__(self, _url):
+            pass
+
+        def observe(self, _goal):
+            candidates = [_candidate(11, "Tangy BBQ Dipping Sauce 45 cal", tag="button"),
+                          _candidate(12, "Sweet N Sour Dipping Sauce 50 cal", tag="button"),
+                          _candidate(21, "Tangy BBQ Dipping Sauce 45 cal", tag="button"),
+                          _candidate(22, "Sweet N Sour Dipping Sauce 50 cal", tag="button")]
+            if self.remaining:
+                candidates.insert(0, _candidate(10, f"Make {self.remaining} required selection" +
+                                              ("s" if self.remaining > 1 else ""), tag="button"))
+            else:
+                candidates.extend([_candidate(30, "Increase quantity by 1", tag="button"),
+                                   _candidate(31, f"Current quantity is {self.quantity}", tag="input")])
+            return {"url": "https://www.doordash.com/store/test", "title": "DoorDash",
+                    "dialog_title": "10 pc. Chicken McNuggets", "visible_text": "Nuggets",
+                    "candidates": candidates, "all_candidate_count": len(candidates),
+                    "scrollable_regions": [], "state_hash": f"{self.remaining}:{self.quantity}"}
+
+        def execute(self, decision, _observation, **_kwargs):
+            if decision["action"] == "ask" or decision["action"] == "stop":
+                return {"status": decision["action"], "executed": False, "reason": ""}
+            if self.remaining:
+                self.remaining -= 1
+            else:
+                self.quantity += 1
+            return {"status": "executed", "executed": True, "reason": ""}
+
+        def screenshot(self, _path):
+            pass
+
+        def close(self):
+            pass
+
+    class Client:
+        def chat_response(self, **kwargs):
+            state = json.loads(kwargs["messages"][-1].content)
+            packet = state["bank_packet"]
+            action = packet[0]["required_next_action"] if packet else (
+                {"action": "click", "candidate_id": "c030", "text": ""}
+                if state["goal_state"]["visible_quantity"] == 1 else
+                {"action": "stop", "candidate_id": "", "text": ""})
+            return SimpleNamespace(content=json.dumps({**action, "reason": "goal progress"}))
+
+    bridge = Bridge("")
+    monkeypatch.setattr(live_browser, "PlaywrightCDPBridge", lambda _url: bridge)
+    common = {"goal": "Get Nuggets quantity 2", "client": Client(), "model": "test:student",
+              "out_dir": tmp_path, "max_steps": 5}
+    paused = live_browser.run_live_browser_fortress(**common)
+    assert paused["stop_reason"] == "clarification_required"
+    assert len(paused["rows"]) == 1
+    resumed = live_browser.run_live_browser_fortress(
+        **common, resume_report=paused, clarification_answer="Tangy BBQ and Sweet N Sour")
+    assert [row["decision"]["action"] for row in resumed["rows"]] == ["ask", "click", "click", "click", "stop"]
+    assert resumed["rows"][1]["goal_state_after"]["required_choices_remaining"] == 1
+    assert resumed["rows"][2]["goal_state_after"]["required_choices_remaining"] == 0
+    assert resumed["rows"][3]["goal_state_after"]["visible_quantity"] == 2
+    assert resumed["clarification"]["choices"] == ["Tangy BBQ Dipping Sauce 45 cal", "Sweet N Sour Dipping Sauce 50 cal"]
+    assert "Tangy BBQ and Sweet" not in json.dumps(resumed)
+
+    bridge.remaining, bridge.quantity = 2, 1
+    manual_common = {**common, "out_dir": tmp_path / "manual"}
+    paused_manual = live_browser.run_live_browser_fortress(**manual_common)
+    bridge.remaining = 0
+    resumed_manual = live_browser.run_live_browser_fortress(**manual_common, resume_report=paused_manual)
+    assert resumed_manual["clarification"]["choice_method"] == "manual_ui"
+    assert resumed_manual["rows"][-1]["decision"]["action"] == "stop"
 
 
 def test_live_verifier_rejects_scroll_past_strongly_goal_aligned_item():
