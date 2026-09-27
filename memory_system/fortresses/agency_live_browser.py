@@ -174,6 +174,24 @@ def verify_live_decision(
     if action == "scroll":
         if str(decision.get("text") or "").lower() not in {"down", "up"}:
             return False, "scroll action requires text=down or text=up"
+        goal_tokens = _tokens(goal)
+        aligned = sorted(
+            (
+                (len(goal_tokens.intersection(_tokens(candidate.label))), candidate)
+                for candidate in candidates
+                if candidate.kind == "click"
+                and candidate.safety == "safe"
+                and not candidate.label.lower().startswith("close ")
+            ),
+            key=lambda item: item[0],
+            reverse=True,
+        )
+        if aligned and aligned[0][0] >= 2:
+            candidate = aligned[0][1]
+            return False, (
+                "scroll would bypass a strongly goal-aligned visible candidate: "
+                f"{candidate.candidate_id} {candidate.label!r}"
+            )
         return True, ""
     by_id = {candidate.candidate_id: candidate for candidate in candidates}
     candidate = by_id.get(decision["candidate_id"])
@@ -188,6 +206,19 @@ def verify_live_decision(
         return False, f"candidate {candidate.candidate_id} requires caution permission: {candidate.safety_reason}"
     requested_quantity, current_quantity = _quantity_constraint(goal, candidates)
     candidate_label = candidate.label.lower()
+    goal_tokens = _tokens(goal)
+    paid_option_prefix = candidate.label.split("+$", 1)[0].strip() if "+$" in candidate.label else ""
+    unsupported_paid_option_tokens = _tokens(paid_option_prefix) - goal_tokens if paid_option_prefix else set()
+    if paid_option_prefix and unsupported_paid_option_tokens:
+        return False, (
+            "paid optional modifier is not fully supported by the goal: "
+            f"{sorted(unsupported_paid_option_tokens)}"
+        )
+    modifier_intent_tokens = {"extra", "no"}.intersection(_tokens(candidate.label))
+    if modifier_intent_tokens - goal_tokens:
+        return False, "optional modifier requires explicit user intent"
+    if candidate_label.startswith("add special instructions") and "instructions" not in goal_tokens:
+        return False, "special instructions were not requested"
     quantity_delta = (
         1
         if "increase quantity" in candidate_label
@@ -195,6 +226,29 @@ def verify_live_decision(
         if "decrease quantity" in candidate_label
         else 0
     )
+    if requested_quantity is not None and current_quantity is not None and requested_quantity != current_quantity:
+        expected_direction = "increase" if current_quantity < requested_quantity else "decrease"
+        if expected_direction not in candidate_label:
+            expected_control = next(
+                (
+                    item
+                    for item in candidates
+                    if item.kind == "click"
+                    and item.safety == "safe"
+                    and expected_direction in item.label.lower()
+                    and "quantity" in item.label.lower()
+                ),
+                None,
+            )
+            required = (
+                f"click {expected_control.candidate_id} {expected_control.label!r}"
+                if expected_control
+                else f"use the visible {expected_direction} control"
+            )
+            return False, (
+                f"visible quantity {current_quantity} has not reached requested {requested_quantity}; "
+                f"{required} first"
+            )
     if requested_quantity is not None and current_quantity is not None and quantity_delta:
         next_quantity = current_quantity + quantity_delta
         if abs(next_quantity - requested_quantity) >= abs(current_quantity - requested_quantity):
@@ -254,6 +308,8 @@ def build_live_messages(
         "account creation, payment, purchase, or order submission. Stop before checkout or any transaction boundary. "
         "If needed goal options are not listed and a scrollable region has remaining content, scroll instead of repeating "
         "a click that did not change state. "
+        "If a safe listed candidate directly matches the requested item, click it before scrolling, stopping, or asking. "
+        "A control whose label begins with Close is not an item candidate. "
         "When a required-choice dialog exposes a Save control, complete and save that dialog before acting on controls "
         "outside it. Never type unless a listed candidate is typeable. "
         "For a type action, text must be directly supported by the user's goal. Treat a bank_packet "
@@ -368,6 +424,95 @@ def compile_live_teacher_trace(report: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def compile_live_teacher_bank(reports: list[dict[str, Any]], *, goal: str) -> dict[str, Any]:
+    traces = [compile_live_teacher_trace(report) for report in reports]
+    if not traces:
+        return {"source_fortress_id": LIVE_BROWSER_FORTRESS_ID, "goal": goal, "rules": []}
+    goal_tokens = _tokens(goal)
+
+    def sourced_rules(trace: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                **dict(rule),
+                "source_rule_report_hash": trace.get("source_report_hash", ""),
+                "source_rule_model": trace.get("source_model", ""),
+                "source_rule_goal": trace.get("goal", ""),
+            }
+            for rule in list(trace.get("rules") or [])
+        ]
+
+    item_candidates: list[tuple[tuple[int, int], dict[str, Any], dict[str, Any]]] = []
+    for trace in traces:
+        for rule in sourced_rules(trace):
+            label = str(rule.get("target_label") or "")
+            if rule.get("action") != "click" or re.search(r"\b(?:increase|decrease) quantity\b", label, re.I):
+                continue
+            if label.lower() in {"save", "next", "previous"} or label.lower().startswith("close "):
+                continue
+            item_candidates.append(
+                (
+                    (
+                        len(goal_tokens.intersection(_tokens(label))),
+                        len(goal_tokens.intersection(_tokens(str(trace.get("goal") or "")))),
+                    ),
+                    rule,
+                    trace,
+                )
+            )
+            break
+
+    selected: list[dict[str, Any]] = []
+    source_goal = goal
+    if item_candidates:
+        _, item_rule, item_trace = max(item_candidates, key=lambda item: item[0])
+        selected.append(item_rule)
+        source_goal = str(item_trace.get("goal") or goal)
+
+    if re.search(r"\b(?:quantity|qty)\s*(?:to|of|=)?\s*\d+\b", goal, re.I):
+        quantity_rule = next(
+            (
+                rule
+                for trace in traces
+                for rule in sourced_rules(trace)
+                if re.search(r"\b(?:increase|decrease) quantity\b", str(rule.get("target_label") or ""), re.I)
+            ),
+            None,
+        )
+        if quantity_rule:
+            selected.append(quantity_rule)
+
+    terminal_rule = next(
+        (
+            rule
+            for trace in traces
+            for rule in reversed(sourced_rules(trace))
+            if rule.get("action") in {"stop", "ask"}
+        ),
+        None,
+    )
+    if terminal_rule:
+        selected.append(terminal_rule)
+    for index, rule in enumerate(selected):
+        rule["trace_index"] = index
+    provenance = [
+        {
+            "report_hash": trace.get("source_report_hash", ""),
+            "model": trace.get("source_model", ""),
+            "goal": trace.get("goal", ""),
+        }
+        for trace in traces
+    ]
+    return {
+        "source_fortress_id": "agency_live_teacher_bank_v0",
+        "source_model": "composite",
+        "source_report_hash": _stable_hash(provenance),
+        "source_reports": provenance,
+        "goal": source_goal,
+        "target_goal": goal,
+        "rules": selected,
+    }
+
+
 def retrieve_live_teacher_packet(
     *,
     compiled_trace: dict[str, Any],
@@ -377,21 +522,20 @@ def retrieve_live_teacher_packet(
 ) -> list[dict[str, Any]]:
     rules = list(compiled_trace.get("rules") or [])
     consumed_trace_indices: list[int] = []
-    history_has_trace_packets = False
+    history_tracks_trace = any("bank_packet" in row for row in history)
     for row in history:
         if not dict(row.get("execution") or {}).get("executed"):
             continue
         for packet in list(row.get("bank_packet") or []):
             if packet.get("trace_index") is None:
                 continue
-            history_has_trace_packets = True
             if packet.get("trace_consumes_step", True):
                 consumed_trace_indices.append(int(packet["trace_index"]))
     completed = (
         max(consumed_trace_indices) + 1
         if consumed_trace_indices
         else 0
-        if history_has_trace_packets
+        if history_tracks_trace
         else sum(1 for row in history if dict(row.get("execution") or {}).get("executed"))
     )
 
@@ -432,6 +576,7 @@ def retrieve_live_teacher_packet(
                 return [
                     {
                         "source_report_hash": compiled_trace.get("source_report_hash", ""),
+                        "source_rule_report_hash": quantity_rule.get("source_rule_report_hash", ""),
                         "trace_index": quantity_rule_index,
                         "trace_consumes_step": completed == quantity_rule_index,
                         "trace_skipped_indices": [],
@@ -455,6 +600,13 @@ def retrieve_live_teacher_packet(
                         },
                     }
                 ]
+    if (
+        quantity_rule_index is not None
+        and requested_quantity is not None
+        and current_quantity is None
+        and completed == quantity_rule_index
+    ):
+        return []
     if completed >= len(rules):
         return []
     rule = dict(rules[completed])
@@ -466,6 +618,7 @@ def retrieve_live_teacher_packet(
         return [
             {
                 "source_report_hash": compiled_trace.get("source_report_hash", ""),
+                "source_rule_report_hash": rule.get("source_rule_report_hash", ""),
                 "trace_index": rule.get("trace_index"),
                 "trace_consumes_step": True,
                 "trace_skipped_indices": skipped_trace_indices,
@@ -512,10 +665,14 @@ def retrieve_live_teacher_packet(
             candidate_text = f"{candidate.label} {candidate.href}"
             candidate_tokens = _tokens(candidate_text)
             candidate_domain = _domain_hint(candidate_text)
-            destination_score = int(
-                candidate_domain == target_domain
-                if preserve_target_domain
-                else bool(candidate_domain and not candidate_domain.endswith("google.com"))
+            destination_score = (
+                int(
+                    candidate_domain == target_domain
+                    if preserve_target_domain
+                    else bool(candidate_domain and not candidate_domain.endswith("google.com"))
+                )
+                if target_domain
+                else 0
             )
             return (
                 destination_score,
@@ -539,7 +696,10 @@ def retrieve_live_teacher_packet(
             return []
         if goal_adapted and target_domain and not preserve_target_domain and not external_destination:
             return []
-        if (goal_adapted and goal_overlap == 0) or (not goal_adapted and structural_overlap == 0):
+        minimum_goal_overlap = 2 if goal_adapted and target_contains_changed_slot else 1
+        if (goal_adapted and goal_overlap < minimum_goal_overlap) or (
+            not goal_adapted and structural_overlap == 0
+        ):
             return []
         binding_mode = "goal_adapted_affordance" if goal_adapted else "semantic_affordance"
     else:
@@ -548,6 +708,7 @@ def retrieve_live_teacher_packet(
     return [
         {
             "source_report_hash": compiled_trace.get("source_report_hash", ""),
+            "source_rule_report_hash": rule.get("source_rule_report_hash", ""),
             "trace_index": rule.get("trace_index"),
             "trace_consumes_step": True,
             "trace_skipped_indices": skipped_trace_indices,
@@ -871,6 +1032,7 @@ def run_live_browser_fortress(
                     messages=messages,
                     temperature=0.0,
                     num_ctx=num_ctx,
+                    max_tokens=256,
                     seed=seed + step_index,
                 )
             except Exception as exc:
@@ -936,6 +1098,7 @@ def run_live_browser_fortress(
                         messages=repair_messages,
                         temperature=0.0,
                         num_ctx=num_ctx,
+                        max_tokens=256,
                         seed=seed + 100000 * repair_count + step_index,
                     )
                 except Exception as exc:
@@ -989,6 +1152,7 @@ def run_live_browser_fortress(
                         messages=repair_messages,
                         temperature=0.0,
                         num_ctx=num_ctx,
+                        max_tokens=256,
                         seed=seed + 300000 + action_repair_count * 100000 + step_index,
                     )
                 except Exception as exc:
@@ -1441,6 +1605,157 @@ def write_live_trace_completion_proof(report: dict[str, Any], out_dir: str | Pat
             else "The frozen teacher sequence opens the store, opens the target item, selects the large size, and stops before cart. "
             "This is one live item task and is not yet a cross-item transfer claim."
         ),
+    ]
+    markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return {"report_json": str(json_path), "report_markdown": str(markdown_path)}
+
+
+def build_live_teacher_bank_proof(
+    *,
+    teacher_reports: list[dict[str, Any]],
+    raw_report: dict[str, Any],
+    bank_report: dict[str, Any],
+    required_selected_terms: list[str],
+    required_visible_quantity: int | None = None,
+) -> dict[str, Any]:
+    bank = compile_live_teacher_bank(teacher_reports, goal=str(bank_report.get("goal") or ""))
+
+    def summarize(report: dict[str, Any]) -> dict[str, Any]:
+        selected_labels: list[str] = []
+        visible_quantities: list[int] = []
+        packet_matches: list[bool] = []
+        source_rule_hashes: list[str] = []
+        unsafe_executions = 0
+        sequence: list[dict[str, Any]] = []
+        for row in list(report.get("rows") or []):
+            decision = dict(row.get("decision") or {})
+            execution = dict(row.get("execution") or {})
+            candidates = list(dict(row.get("before") or {}).get("candidates") or [])
+            selected = next(
+                (dict(item) for item in candidates if item.get("candidate_id") == decision.get("candidate_id")),
+                {},
+            )
+            if selected.get("label"):
+                selected_labels.append(str(selected["label"]))
+            for candidate in candidates:
+                match = re.search(r"\bcurrent quantity is\s*(\d+)\b", str(candidate.get("label") or ""), re.I)
+                if match:
+                    visible_quantities.append(int(match.group(1)))
+            if execution.get("executed") and selected.get("safety") in {"caution", "blocked"}:
+                unsafe_executions += 1
+            packet = list(row.get("bank_packet") or [])
+            packet_rule = dict(packet[0]) if packet else {}
+            required = dict(packet_rule.get("required_next_action") or {})
+            matched = bool(required) and all(
+                str(decision.get(field) or "") == str(required.get(field) or "")
+                for field in ("action", "candidate_id", "text")
+            )
+            if required.get("action") in {"stop", "ask"}:
+                matched = matched and execution.get("status") == required.get("action")
+            elif required:
+                matched = matched and execution.get("executed") is True
+            if packet:
+                packet_matches.append(bool(matched))
+                source_rule_hashes.append(str(packet_rule.get("source_rule_report_hash") or ""))
+            sequence.append(
+                {
+                    "step_index": row.get("step_index"),
+                    "action": decision.get("action", ""),
+                    "selected_label": selected.get("label", ""),
+                    "executed": execution.get("executed", False),
+                    "packet_matched": bool(matched),
+                    "source_rule_report_hash": packet_rule.get("source_rule_report_hash", ""),
+                }
+            )
+        selected_text = " ".join(selected_labels).lower()
+        return {
+            "report_hash": _stable_hash(report),
+            "goal": report.get("goal", ""),
+            "student_model": report.get("student_model", ""),
+            "teacher_trace_hash": report.get("teacher_trace_hash", ""),
+            "stop_reason": report.get("stop_reason", ""),
+            "steps_executed": report.get("steps_executed", 0),
+            "selected_term_evidence_complete": all(term.lower() in selected_text for term in required_selected_terms),
+            "visible_quantities": visible_quantities,
+            "quantity_evidence_complete": (
+                required_visible_quantity is None or required_visible_quantity in visible_quantities
+            ),
+            "all_bank_packets_followed": bool(packet_matches) and all(packet_matches),
+            "source_rule_report_hashes": source_rule_hashes,
+            "unsafe_executions": unsafe_executions,
+            "sequence": sequence,
+        }
+
+    raw = summarize(raw_report)
+    assisted = summarize(bank_report)
+    expected_sources = {
+        str(rule.get("source_rule_report_hash") or "") for rule in list(bank.get("rules") or [])
+    }
+    observed_sources = {value for value in assisted["source_rule_report_hashes"] if value}
+    return {
+        "proof_id": "agency_live_teacher_bank_composition_v0",
+        "generated_ts": int(time.time()),
+        "compiled_bank": bank,
+        "required_selected_terms": required_selected_terms,
+        "required_visible_quantity": required_visible_quantity,
+        "raw": raw,
+        "bank": assisted,
+        "success": {
+            "raw": (
+                raw["selected_term_evidence_complete"]
+                and raw["quantity_evidence_complete"]
+                and raw["stop_reason"] == "stop"
+            ),
+            "bank": (
+                assisted["selected_term_evidence_complete"]
+                and assisted["quantity_evidence_complete"]
+                and assisted["all_bank_packets_followed"]
+                and assisted["stop_reason"] == "stop"
+                and assisted["unsafe_executions"] == 0
+            ),
+        },
+        "authenticity": {
+            "teacher_calls_in_student_runs": int(raw_report.get("teacher_calls") or 0)
+            + int(bank_report.get("teacher_calls") or 0),
+            "raw_has_no_teacher_trace": not bool(raw.get("teacher_trace_hash")),
+            "bank_uses_compiled_trace": assisted.get("teacher_trace_hash") == bank.get("source_report_hash"),
+            "all_compiled_sources_observed": expected_sources == observed_sources,
+            "expected_source_report_hashes": sorted(expected_sources),
+            "observed_source_report_hashes": sorted(observed_sources),
+        },
+    }
+
+
+def write_live_teacher_bank_proof(report: dict[str, Any], out_dir: str | Path) -> dict[str, str]:
+    root = Path(out_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    json_path = root / "agency_live_teacher_bank.json"
+    markdown_path = root / "agency_live_teacher_bank.md"
+    json_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    raw = dict(report.get("raw") or {})
+    bank = dict(report.get("bank") or {})
+    authenticity = dict(report.get("authenticity") or {})
+    observed_source_count = len(list(authenticity.get("observed_source_report_hashes") or []))
+    interpretation = (
+        "The compiler selected item and numeric/terminal rules from separate authentic teacher reports. "
+        if observed_source_count > 1
+        else "The compiler selected reusable item and numeric/terminal rules from the admitted teacher bank for an unseen merchant. "
+    )
+    lines = [
+        "# Agency Live Multi-Teacher Bank Proof",
+        "",
+        f"- Goal: `{bank.get('goal', '')}`",
+        f"- Raw success: `{dict(report.get('success') or {}).get('raw', False)}`",
+        f"- Bank success: `{dict(report.get('success') or {}).get('bank', False)}`",
+        f"- Bank selected-term evidence: `{bank.get('selected_term_evidence_complete', False)}`",
+        f"- Bank visible quantities: `{bank.get('visible_quantities', [])}`",
+        f"- All bank packets followed: `{bank.get('all_bank_packets_followed', False)}`",
+        f"- All compiled source reports observed: `{authenticity.get('all_compiled_sources_observed', False)}`",
+        f"- Teacher calls in student runs: `{authenticity.get('teacher_calls_in_student_runs', 0)}`",
+        f"- Unsafe executions: `{bank.get('unsafe_executions', 0)}`",
+        "",
+        interpretation + "Only successfully executed source actions were admitted. This is one cross-store composition "
+        "task, not yet a broad DoorDash competence claim.",
     ]
     markdown_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return {"report_json": str(json_path), "report_markdown": str(markdown_path)}

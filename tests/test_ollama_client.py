@@ -124,13 +124,19 @@ def test_ollama_chat_passes_seed_in_options(monkeypatch):
         messages=[ChatMessage(role="user", content="hello")],
         temperature=0.1,
         num_ctx=4096,
+        max_tokens=256,
         seed=1234,
     )
 
     assert response.content == '{"ok": true}'
     assert response.request_metadata == {"provider": "ollama", "model": "mistral:7b-instruct", "seed": 1234}
     assert captured["url"] == "http://127.0.0.1:11435/api/chat"
-    assert captured["json"]["options"] == {"temperature": 0.1, "num_ctx": 4096, "seed": 1234}
+    assert captured["json"]["options"] == {
+        "temperature": 0.1,
+        "num_ctx": 4096,
+        "num_predict": 256,
+        "seed": 1234,
+    }
 
 
 def test_github_models_retries_without_temperature_when_model_rejects_it(monkeypatch):

@@ -6,6 +6,7 @@ from memory_system.fortresses.agency_live_browser import (
     candidate_fingerprint,
     canonicalize_bank_candidate_id,
     classify_candidate_safety,
+    compile_live_teacher_bank,
     compile_live_teacher_trace,
     parse_live_decision,
     rank_candidates,
@@ -97,15 +98,51 @@ def test_live_decision_verifier_requires_exact_visible_safe_candidate():
     )[0]
 
 
+def test_live_verifier_rejects_scroll_past_strongly_goal_aligned_item():
+    candidates = [
+        _candidate(55, "Chicken Quesadilla $7.55", tag="button"),
+        _candidate(75, "Cantina Chicken Menu", tag="button"),
+    ]
+    ok, reason = verify_live_decision(
+        {"action": "scroll", "candidate_id": "", "text": "down", "reason": "find item"},
+        candidates,
+        "Select a Chicken Quesadilla from Taco Bell",
+    )
+    assert ok is False
+    assert "c055" in reason
+
+
 def test_live_quantity_verifier_only_allows_progress_toward_requested_count():
     plus = _candidate(2, "Increase quantity by 1")
+    next_control = _candidate(4, "Next")
     at_one = [plus, _candidate(3, "Current quantity is 1", tag="input")]
     at_two = [plus, _candidate(3, "Current quantity is 2", tag="input")]
     decision = {"action": "click", "candidate_id": "c002", "text": "", "reason": "quantity"}
     assert verify_live_decision(decision, at_one, "set quantity to 2")[0]
+    ok, reason = verify_live_decision(
+        {"action": "click", "candidate_id": "c004", "text": "", "reason": ""},
+        [*at_one, next_control],
+        "set quantity to 2",
+    )
+    assert ok is False
+    assert "click c002" in reason
     ok, reason = verify_live_decision(decision, at_two, "set quantity to 2")
     assert ok is False
     assert "moves visible quantity 2 away" in reason
+
+
+def test_live_verifier_rejects_unrequested_paid_and_negative_modifiers():
+    candidates = [
+        _candidate(2, "Extra Chicken +$1.59", tag="button"),
+        _candidate(3, "No Chicken", tag="button"),
+        _candidate(4, "Large +$2.88", tag="button"),
+    ]
+    extra = {"action": "click", "candidate_id": "c002", "text": "", "reason": ""}
+    no_chicken = {"action": "click", "candidate_id": "c003", "text": "", "reason": ""}
+    large = {"action": "click", "candidate_id": "c004", "text": "", "reason": ""}
+    assert not verify_live_decision(extra, candidates, "Select a Chicken Quesadilla")[0]
+    assert not verify_live_decision(no_chicken, candidates, "Select a Chicken Quesadilla")[0]
+    assert verify_live_decision(large, candidates, "Select a large pizza")[0]
 
 
 def test_quantity_trace_repeats_adjustment_without_consuming_next_teacher_rule():
@@ -252,6 +289,48 @@ def test_quantity_trace_skips_teacher_adjustment_when_target_is_already_met():
     assert packet[0]["required_next_action"]["candidate_id"] == "c009"
 
 
+def test_quantity_rule_never_rebinds_without_visible_quantity_state():
+    report = {
+        "fortress_id": "live",
+        "student_model": "teacher",
+        "goal": "Select item and set quantity to 2",
+        "rows": [
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/example",
+                    "candidates": [_candidate(1, "Item").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c001", "text": "", "reason": "item"},
+                "execution": {"executed": True},
+            },
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/example",
+                    "candidates": [_candidate(2, "Increase quantity by 1", tag="button").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c002", "text": "", "reason": "quantity"},
+                "execution": {"executed": True},
+            },
+        ],
+    }
+    trace = compile_live_teacher_trace(report)
+    packet = retrieve_live_teacher_packet(
+        compiled_trace=trace,
+        observation={
+            "url": "https://www.doordash.com/store/example",
+            "candidates": [_candidate(7, "Close Item", tag="button"), _candidate(8, "Next", tag="button")],
+        },
+        history=[
+            {
+                "execution": {"executed": True},
+                "bank_packet": [{"trace_index": 0, "trace_consumes_step": True}],
+            }
+        ],
+        goal="Select item and set quantity to 2",
+    )
+    assert packet == []
+
+
 def test_live_teacher_trace_compiles_and_rebinds_affordance_not_dom_id():
     report = {
         "fortress_id": "live",
@@ -301,6 +380,64 @@ def test_live_teacher_trace_preserves_terminal_stop_rule():
     assert compiled["rules"][0]["action"] == "stop"
     assert packet[0]["binding_mode"] == "terminal_boundary"
     assert packet[0]["required_next_action"]["action"] == "stop"
+
+
+def test_live_teacher_bank_composes_goal_matched_item_quantity_and_terminal_rules():
+    pizza = {
+        "fortress_id": "live",
+        "student_model": "teacher-a",
+        "goal": "Select cheese pizza, set quantity to 2, and stop",
+        "rows": [
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/pizza",
+                    "candidates": [_candidate(1, "Cheese Pizza").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c001", "text": "", "reason": "item"},
+                "execution": {"executed": True},
+            },
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/pizza",
+                    "candidates": [_candidate(2, "Increase quantity by 1", tag="button").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c002", "text": "", "reason": "quantity"},
+                "execution": {"executed": True},
+            },
+            {
+                "before": {"url": "https://www.doordash.com/store/pizza", "candidates": []},
+                "decision": {"action": "stop", "candidate_id": "", "text": "", "reason": "complete"},
+                "execution": {"executed": False, "status": "stop"},
+            },
+        ],
+    }
+    taco = {
+        "fortress_id": "live",
+        "student_model": "teacher-b",
+        "goal": "Select a Chicken Quesadilla from Taco Bell",
+        "rows": [
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/taco-bell",
+                    "candidates": [_candidate(5, "Chicken Quesadilla $7.55").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c005", "text": "", "reason": "item"},
+                "execution": {"executed": True},
+            }
+        ],
+    }
+    bank = compile_live_teacher_bank(
+        [pizza, taco],
+        goal="Select a Chicken Quesadilla from Taco Bell, set quantity to 3, and stop",
+    )
+    assert [rule["target_label"] for rule in bank["rules"][:-1]] == [
+        "Chicken Quesadilla $7.55",
+        "Increase quantity by 1",
+    ]
+    assert bank["rules"][-1]["action"] == "stop"
+    assert bank["rules"][0]["source_rule_model"] == "teacher-b"
+    assert bank["rules"][1]["source_rule_model"] == "teacher-a"
+    assert len({rule["source_rule_report_hash"] for rule in bank["rules"]}) == 2
 
 
 def test_live_teacher_trace_adapts_search_text_and_result_to_new_goal():
@@ -436,6 +573,45 @@ def test_goal_adapted_affordance_does_not_replay_changed_item_slot():
     )
     assert packet[0]["binding_mode"] == "goal_adapted_affordance"
     assert packet[0]["required_next_action"]["candidate_id"] == "c006"
+
+
+def test_unbanked_exploration_does_not_consume_teacher_trace_progress():
+    report = {
+        "fortress_id": "live",
+        "student_model": "teacher",
+        "goal": "Select a chicken quesadilla",
+        "rows": [
+            {
+                "before": {
+                    "url": "https://www.doordash.com/store/example",
+                    "candidates": [_candidate(5, "Chicken Quesadilla").public()],
+                },
+                "decision": {"action": "click", "candidate_id": "c005", "text": "", "reason": "item"},
+                "execution": {"executed": True},
+            }
+        ],
+    }
+    trace = compile_live_teacher_trace(report)
+    packet = retrieve_live_teacher_packet(
+        compiled_trace=trace,
+        observation={
+            "url": "https://www.doordash.com/store/example",
+            "candidates": [
+                _candidate(7, "Careers", href="https://careers.example.com"),
+                _candidate(8, "Double Cheeseburger"),
+            ],
+        },
+        history=[
+            {
+                "execution": {"executed": True},
+                "decision": {"action": "scroll", "candidate_id": "", "text": "down"},
+                "bank_packet": [],
+            }
+        ],
+        goal="Select a double cheeseburger",
+    )
+    assert packet[0]["trace_index"] == 0
+    assert packet[0]["required_next_action"]["candidate_id"] == "c008"
 
 
 def test_bank_candidate_id_canonicalizer_only_restores_equivalent_zero_padding():

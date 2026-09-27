@@ -156,6 +156,7 @@ class UniversalLLMClient:
                     messages=messages,
                     temperature=temperature,
                     num_ctx=num_ctx,
+                    max_tokens=max_tokens,
                     seed=seed,
                 ),
                 request_metadata={"provider": self.provider, "model": model, "seed": seed},
@@ -314,6 +315,7 @@ class UniversalLLMClient:
         messages: list[ChatMessage],
         temperature: float,
         num_ctx: Optional[int],
+        max_tokens: Optional[int],
         seed: Optional[int],
     ) -> str:
         url = f"{self.base_url}/api/chat"
@@ -326,6 +328,8 @@ class UniversalLLMClient:
         }
         if num_ctx is not None:
             payload["options"]["num_ctx"] = int(num_ctx)
+        if max_tokens is not None:
+            payload["options"]["num_predict"] = int(max_tokens)
         if seed is not None:
             payload["options"]["seed"] = int(seed)
 

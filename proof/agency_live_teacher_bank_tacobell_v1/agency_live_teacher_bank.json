@@ -1,0 +1,171 @@
+{
+  "authenticity": {
+    "all_compiled_sources_observed": true,
+    "bank_uses_compiled_trace": true,
+    "expected_source_report_hashes": [
+      "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950",
+      "0d7584841fb39cfcd41768c08ea5f6999a53dac3ba49b680f16ca344e708b363"
+    ],
+    "observed_source_report_hashes": [
+      "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950",
+      "0d7584841fb39cfcd41768c08ea5f6999a53dac3ba49b680f16ca344e708b363"
+    ],
+    "raw_has_no_teacher_trace": true,
+    "teacher_calls_in_student_runs": 0
+  },
+  "bank": {
+    "all_bank_packets_followed": true,
+    "goal": "On DoorDash, select a Chicken Quesadilla from Taco Bell in Dallas, set quantity to 3, and stop before adding it to the cart or checkout.",
+    "quantity_evidence_complete": true,
+    "report_hash": "f45bb356c4c82cb1670368d1c70ba220762d4c3ebe81d7fd57ef49633762175e",
+    "selected_term_evidence_complete": true,
+    "sequence": [
+      {
+        "action": "click",
+        "executed": true,
+        "packet_matched": true,
+        "selected_label": "Chicken Quesadilla $7.55 \u2022 84% (78) Free on $22+",
+        "source_rule_report_hash": "0d7584841fb39cfcd41768c08ea5f6999a53dac3ba49b680f16ca344e708b363",
+        "step_index": 0
+      },
+      {
+        "action": "click",
+        "executed": true,
+        "packet_matched": true,
+        "selected_label": "Increase quantity by 1",
+        "source_rule_report_hash": "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950",
+        "step_index": 1
+      },
+      {
+        "action": "click",
+        "executed": true,
+        "packet_matched": true,
+        "selected_label": "Increase quantity by 1",
+        "source_rule_report_hash": "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950",
+        "step_index": 2
+      },
+      {
+        "action": "stop",
+        "executed": false,
+        "packet_matched": true,
+        "selected_label": "",
+        "source_rule_report_hash": "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950",
+        "step_index": 3
+      }
+    ],
+    "source_rule_report_hashes": [
+      "0d7584841fb39cfcd41768c08ea5f6999a53dac3ba49b680f16ca344e708b363",
+      "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950",
+      "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950",
+      "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950"
+    ],
+    "steps_executed": 3,
+    "stop_reason": "stop",
+    "student_model": "mistral:7b-instruct",
+    "teacher_trace_hash": "906091c9cc05968de8cb36eabecbc8edc69808080cbbd0a7133e65ef6d0ccfaa",
+    "unsafe_executions": 0,
+    "visible_quantities": [
+      1,
+      2,
+      3
+    ]
+  },
+  "compiled_bank": {
+    "goal": "On DoorDash, select a Chicken Quesadilla from Taco Bell in Dallas, set quantity to 2, and stop before adding it to the cart or checkout.",
+    "rules": [
+      {
+        "action": "click",
+        "page_class": "doordash",
+        "source_rule_goal": "On DoorDash, select a Chicken Quesadilla from Taco Bell in Dallas, set quantity to 2, and stop before adding it to the cart or checkout.",
+        "source_rule_model": "qwen2.5:32b",
+        "source_rule_report_hash": "0d7584841fb39cfcd41768c08ea5f6999a53dac3ba49b680f16ca344e708b363",
+        "target_domain": "",
+        "target_href": "",
+        "target_kind": "click",
+        "target_label": "Chicken Quesadilla $7.55 \u2022 84% (78) Free on $22+",
+        "teacher_reason": "Selecting the Chicken Quesadilla as it matches the goal.",
+        "text": "",
+        "trace_index": 0
+      },
+      {
+        "action": "click",
+        "page_class": "doordash",
+        "source_rule_goal": "On DoorDash, find a cheese pizza from Pizza Hut in Dallas, Texas, select large with hand-tossed crust, set quantity to 2, and stop before adding it to the cart or checkout.",
+        "source_rule_model": "qwen2.5:32b",
+        "source_rule_report_hash": "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950",
+        "target_domain": "",
+        "target_href": "",
+        "target_kind": "click",
+        "target_label": "Increase quantity by 1",
+        "teacher_reason": "Increase the quantity to 2 as per the user's goal.",
+        "text": "",
+        "trace_index": 1
+      },
+      {
+        "action": "stop",
+        "page_class": "doordash",
+        "source_rule_goal": "On DoorDash, find a cheese pizza from Pizza Hut in Dallas, Texas, select large with hand-tossed crust, set quantity to 2, and stop before adding it to the cart or checkout.",
+        "source_rule_model": "qwen2.5:32b",
+        "source_rule_report_hash": "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950",
+        "target_domain": "",
+        "target_href": "",
+        "target_kind": "",
+        "target_label": "",
+        "teacher_reason": "The goal of selecting a large hand-tossed cheese pizza and setting the quantity to 2 has been achieved. Stopping before adding it to the cart or proceeding to checkout.",
+        "text": "",
+        "trace_index": 2
+      }
+    ],
+    "source_fortress_id": "agency_live_teacher_bank_v0",
+    "source_model": "composite",
+    "source_report_hash": "906091c9cc05968de8cb36eabecbc8edc69808080cbbd0a7133e65ef6d0ccfaa",
+    "source_reports": [
+      {
+        "goal": "On DoorDash, find a cheese pizza from Pizza Hut in Dallas, Texas, select large with hand-tossed crust, set quantity to 2, and stop before adding it to the cart or checkout.",
+        "model": "qwen2.5:32b",
+        "report_hash": "0cafecf4bbbabb5166972f7d402141b70921a265ee230a4dcfe53c22e393e950"
+      },
+      {
+        "goal": "On DoorDash, select a Chicken Quesadilla from Taco Bell in Dallas, set quantity to 2, and stop before adding it to the cart or checkout.",
+        "model": "qwen2.5:32b",
+        "report_hash": "0d7584841fb39cfcd41768c08ea5f6999a53dac3ba49b680f16ca344e708b363"
+      }
+    ],
+    "target_goal": "On DoorDash, select a Chicken Quesadilla from Taco Bell in Dallas, set quantity to 3, and stop before adding it to the cart or checkout."
+  },
+  "generated_ts": 1790484310,
+  "proof_id": "agency_live_teacher_bank_composition_v0",
+  "raw": {
+    "all_bank_packets_followed": false,
+    "goal": "On DoorDash, select a Chicken Quesadilla from Taco Bell in Dallas, set quantity to 3, and stop before adding it to the cart or checkout.",
+    "quantity_evidence_complete": false,
+    "report_hash": "670f882202cf80eb25858032ec5dbba46cc6afc3127d8fa6d63f9fdb60908090",
+    "selected_term_evidence_complete": false,
+    "sequence": [
+      {
+        "action": "scroll",
+        "executed": false,
+        "packet_matched": false,
+        "selected_label": "",
+        "source_rule_report_hash": "",
+        "step_index": 0
+      }
+    ],
+    "source_rule_report_hashes": [],
+    "steps_executed": 0,
+    "stop_reason": "scroll would bypass a strongly goal-aligned visible candidate: c055 'Chicken Quesadilla $7.55 \u2022 84% (78) Free on $22+'",
+    "student_model": "mistral:7b-instruct",
+    "teacher_trace_hash": "",
+    "unsafe_executions": 0,
+    "visible_quantities": []
+  },
+  "required_selected_terms": [
+    "chicken",
+    "quesadilla"
+  ],
+  "required_visible_quantity": 3,
+  "success": {
+    "bank": true,
+    "raw": false
+  }
+}
